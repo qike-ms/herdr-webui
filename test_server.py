@@ -185,6 +185,9 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("red", json.loads(body)["text"])
         self.assertEqual(self.calls()[-1], ["pane", "read", "w1:p1", "--source", "recent-unwrapped", "--lines", "50", "--format", "ansi"])
+        self.assertEqual(self.req("/api/read?pane=w1:p1&source=visible&lines=80&ansi=1")[0], 200)
+        self.assertEqual(self.calls()[-1], ["pane", "read", "w1:p1", "--source", "visible", "--lines", "80", "--format", "ansi"])
+        self.assertEqual(self.req("/api/read?pane=w1:p1&source=arbitrary")[0], 400)
         self.assertEqual(self.req("/api/read?pane=--help")[0], 400)
         self.assertEqual(self.req("/api/read?pane=w7:p7")[0], 404)
 

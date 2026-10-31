@@ -55,6 +55,12 @@ only test them on a session you intend to interrupt or close.
 **Alt-Enter** sends the WebUI draft followed by Alt-Enter to the selected pane;
 it requires a nonempty browser draft and clears it only after success. If delivery
 fails, inspect the terminal before retrying because text may already be present.
+In a disposable, idle agent pane, type `/`: expect the agent's own command menu
+and highlight. Use ↑/↓, then Tab: expect the completed command plus a space in
+the composer. Add parameters and Enter: expect one submission, not a duplicated
+prefix. Type `/model` and Enter: expect the native model list; ↑/↓ and Enter
+select a model. Escape cancels native interaction. On uncertain delivery, inspect
+and repair the pane before resetting browser mirroring.
 Check that tapping the composer opens the keyboard while keeping input visible.
 Safari's Share > Add to Home Screen makes a convenient shortcut.
 

@@ -132,6 +132,10 @@ main{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(
 .dock form{display:flex;gap:8px;padding:8px 12px;border-top:1px solid var(--line);align-items:flex-end}
 .dock textarea{flex:1;resize:none;min-height:36px;max-height:140px;background:var(--bg0);border:1px solid var(--line2);border-radius:8px;padding:8px 10px;font:12.5px var(--mono);outline:0}
 .dock textarea:focus{border-color:var(--cyan)}
+.native-menu{flex:none;max-height:40%;min-height:0;overflow:auto;border-top:1px solid var(--cyan);background:var(--bg0)}
+.native-menu[hidden]{display:none}
+.native-menu header{padding:6px 12px;font:11px var(--mono);color:var(--cyan)}
+.native-menu pre{margin:0;padding:4px 12px 8px;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.45 var(--mono)}
 select{background:var(--bg0);border:1px solid var(--line2);border-radius:8px;padding:7px 8px;font:12px var(--mono);outline:0}
 /* modal */
 .modal{position:fixed;inset:0;background:#000b;backdrop-filter:blur(3px);display:none;place-items:center;z-index:50}
@@ -330,6 +334,11 @@ select{background:var(--bg0);border:1px solid var(--line2);border-radius:8px;pad
         </div>
         <div class="term" id="dock-term"></div>
         <div class="keys" id="dock-keys"></div>
+        <section id="native-menu" class="native-menu" hidden aria-label="Live agent menu">
+          <header id="native-menu-title">Agent commands · ↑ ↓ navigate · Enter select · Tab parameters</header>
+          <pre id="native-menu-output" aria-live="polite"></pre>
+          <button id="native-menu-reset" class="btn" hidden>Reset after inspecting pane</button>
+        </section>
         <form id="dock-form">
           <select id="dock-mode" title="How input is delivered">
             <option value="prompt">Prompt agent</option>
@@ -392,6 +401,7 @@ const phone = matchMedia("(max-width:900px)");
 let mobileView = null, mobileSelected = false, autoMobileDock = false, agentStateFilter = null;
 const drafts = new Map();
 const closingPanes = new Set();
+const nativeInputs = new Map();
 let interruptBusy = false, submitBusy = false;
 
 /* ---------------- utils ---------------- */
@@ -469,6 +479,105 @@ function ansiToHtml(src){
 }
 const stripAnsi = s => s.replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g,"").replace(/\x1b\[[0-9;?]*[A-Za-z]/g,"").replace(/\r/g,"");
 
+/* ---------------- native agent menus ---------------- */
+function nativeInput(){return nativeInputs.get(S.pane);}
+function renderNativeMenu(){
+  const n=nativeInput(),visible=n&&(n.failed||n.phase!=="params");
+  $("dock-input").readOnly=!!(n&&(n.locked||n.failed));
+  $("native-menu-reset").hidden=!n?.failed;
+  $("native-menu").hidden=!visible;
+  if(!visible)return;
+  $("native-menu-title").textContent=n.failed?"Delivery uncertain · inspect the pane before retrying":n.phase==="model"?"Agent models · ↑ ↓ navigate · Enter select · Esc cancel":"Agent commands · ↑ ↓ navigate · Enter select · Tab parameters";
+  // Render the native viewport, not an invented command/model catalogue.
+  $("native-menu-output").innerHTML=n.screen?ansiToHtml(n.screen.split("\n").slice(-28).join("\n")):"Waiting for the agent menu…";
+}
+function nativeEditor(screen){
+  const rows=screen.split("\n");
+  for(let i=rows.length-1;i>=0;i--){
+    // Inverse-video cursor cells and terminal padding are not editor text.
+    const cursor=rows[i].indexOf("\x1b[7m"),line=cursor<0?stripAnsi(rows[i]).trimEnd():stripAnsi(rows[i].slice(0,cursor));
+    const match=line.match(/^\s*(?:[>❯›] ?)?(\/\S*[^\n]*)$/);
+    if(match)return match[1];
+  }
+  return null;
+}
+function queueNative(n,work){
+  n.pending++;
+  n.queue=n.queue.then(async()=>{if(n.failed||nativeInputs.get(n.pane)!==n)return;await work();}).catch(e=>{
+    n.failed=true;toast(`${e.message} Input may already be in the pane; inspect it before retrying.`,"err");
+  }).finally(()=>{n.pending--;if(nativeInput()===n)renderNativeMenu();});
+  return n.queue;
+}
+async function readNative(n,settle=false){
+  if(settle)await new Promise(resolve=>setTimeout(resolve,150));
+  const d=await getJSON(`/api/read?pane=${encodeURIComponent(n.pane)}&source=visible&lines=80&ansi=1`);
+  if(typeof d.text!=="string")throw new Error("Invalid agent menu response.");
+  n.screen=d.text;if(nativeInput()===n)renderNativeMenu();return d.text;
+}
+async function syncNativeText(n,text){
+  if(text===n.sent)return;
+  // Only replace the suffix we own; never clear unrelated terminal input.
+  const old=Array.from(n.sent),next=Array.from(text);let common=0;
+  while(common<old.length&&common<next.length&&old[common]===next[common])common++;
+  for(let left=old.length-common;left>0;left-=16)await act("keys",{pane:n.pane,keys:Array(Math.min(left,16)).fill("backspace")});
+  const suffix=next.slice(common).join("");if(suffix)await act("send",{pane:n.pane,text:suffix,enter:false});
+  n.sent=text;
+}
+function mirrorNativeText(){
+  const text=$("dock-input").value;let n=nativeInput();
+  if(!n&&text.startsWith("/")&&getPane(S.pane)?.agent&&!submitBusy){
+    n={pane:S.pane,phase:"command",sent:"",screen:"",queue:Promise.resolve(),pending:0,failed:false,locked:false};nativeInputs.set(S.pane,n);renderNativeMenu();
+  }
+  if(!n)return;
+  queueNative(n,async()=>{
+    await syncNativeText(n,text);
+    if(n.phase==="command"&&!text&&n.pending===1){nativeInputs.delete(n.pane);renderNativeMenu();return;}
+    if(n.phase==="command"&&!text.startsWith("/"))n.phase="params";
+    await readNative(n,true);
+  });
+}
+function updateNativeDraft(n,text){
+  drafts.set(n.pane,{text,mode:drafts.get(n.pane)?.mode||"prompt"});
+  if(S.pane===n.pane){$("dock-input").value=text;$("dock-input").style.height="auto";}
+}
+function nativeKey(key){
+  const n=nativeInput();if(!n)return false;
+  if(n.failed||(n.locked&&!["up","down"].includes(key)))return true;
+  const text=$("dock-input").value,transitionPending=n.locked;
+  if(["tab","enter","esc"].includes(key)){n.locked=true;renderNativeMenu();}
+  queueNative(n,async()=>{
+    if(!transitionPending)await syncNativeText(n,text);
+    // Let bracketed paste settle before a dependent native completion/selection key.
+    await readNative(n,true);
+    if(key==="tab"&&n.phase!=="model"){
+      await act("keys",{pane:n.pane,keys:["tab"]});
+      // Tab changes the editor in the agent. Wait for its actual completed prefix.
+      const deadline=Date.now()+2500;let completed=null;
+      do{
+        completed=nativeEditor(await readNative(n,true));
+        if(completed&&(completed!==n.sent||!/^\s*[→❯›>]\s*\S/m.test(stripAnsi(n.screen))))break;
+        await new Promise(resolve=>setTimeout(resolve,100));
+      }while(Date.now()<deadline);
+      if(!completed||(completed===n.sent&&/^\s*[→❯›>]\s*\S/m.test(stripAnsi(n.screen))))throw new Error("Could not confirm native completion.");
+      n.sent=completed;
+      if(!n.sent.endsWith(" ")){await act("send",{pane:n.pane,text:" ",enter:false});n.sent+=" ";}
+      n.phase="params";
+      if(S.pane!==n.pane||$("dock-input").value===text)updateNativeDraft(n,n.sent);
+    }else{
+      const model=n.phase!=="model"&&(n.sent.trim()==="/model"||(n.phase==="command"&&/^\s*[→❯›>]\s*\/?model\b/m.test(stripAnsi(n.screen))));
+      if(key==="esc")await syncNativeText(n,"");
+      await act("keys",{pane:n.pane,keys:[key]});
+      if(key==="enter"||key==="esc"){
+        if(key==="enter"&&model){n.phase="model";n.sent="";updateNativeDraft(n,"");await readNative(n,true);}
+        else{nativeInputs.delete(n.pane);updateNativeDraft(n,"");if(S.pane===n.pane)renderNativeMenu();}
+      }else await readNative(n,true);
+    }
+    if(S.pane===n.pane)S.dockStick=true;
+    n.locked=false;
+  });
+  return true;
+}
+
 /* ---------------- data ---------------- */
 async function refreshTree(manual=false){
   if(S.busy)return;S.busy=true;
@@ -476,6 +585,7 @@ async function refreshTree(manual=false){
   if(manual){$("refresh-ico").classList.add("spin");retry.disabled=true;retry.setAttribute("aria-busy","true");retry.textContent="Connecting…";}
   try{
     S.tree=await getJSON("/api/tree");S.err=null;
+    for(const pane of nativeInputs.keys())if(!getPane(pane))nativeInputs.delete(pane);
     // keep selection valid; default to the TUI's focused space/tab
     if(!getWs(S.ws)){S.ws=S.tree.focused.workspace||S.tree.workspaces[0]?.workspace_id||null;S.tab=null;if(S.ws)S.open.add(S.ws);}
     if(!getTab(S.tab)||getTab(S.tab).workspace_id!==S.ws){const w=getWs(S.ws);S.tab=(w&&getTab(w.active_tab_id))?w.active_tab_id:(S.ws?tabsOf(S.ws)[0]?.tab_id:null);}
@@ -509,6 +619,7 @@ async function pollPanes(){
 }
 async function pollDock(){
   if(!S.pane||document.hidden)return;
+  const n=nativeInput();if(n&&!n.failed&&!n.pending)queueNative(n,()=>readNative(n));
   const id=S.pane,ansi=$("dock-ansi").checked;const txt=await readPane(id,{lines:400,ansi});if(txt===undefined||S.pane!==id||$("dock-ansi").checked!==ansi)return;
   const el=$("dock-term");const atBottom=el.scrollHeight-el.scrollTop-el.clientHeight<30;
   el.innerHTML=ansi?ansiToHtml(txt):esc(txt);if(atBottom||S.dockStick){el.scrollTop=el.scrollHeight;S.dockStick=false;}
@@ -522,7 +633,7 @@ function tabMatch(t){return matches(tabName(t),t.tab_id)||panesOf(t.tab_id).some
 function wsMatch(w){return matches(wsName(w),w.workspace_id)||tabsOf(w.workspace_id).some(tabMatch);}
 
 /* ---------------- render ---------------- */
-function render(){renderConnectionState();renderSide();renderCrumbs();renderTabs();if(!phone.matches)renderCanvas();renderDockHeader();renderMobile();}
+function render(){renderConnectionState();renderSide();renderCrumbs();renderTabs();if(!phone.matches)renderCanvas();renderDockHeader();renderMobile();renderNativeMenu();}
 
 function renderConnectionState(){
   const waiting=!S.tree;
@@ -799,16 +910,27 @@ $("canvas").addEventListener("click",async e=>{
   if(e.target.closest("[data-close]")){await closePane(id);return;}
   openDock(id);
 });
+$("native-menu-reset").onclick=()=>{
+  const n=nativeInput();if(!n?.failed||!confirm("Inspect and repair the input in the agent pane first. Reset browser mirroring without sending any keys?"))return;
+  nativeInputs.delete(n.pane);updateNativeDraft(n,"");renderNativeMenu();
+};
 $("dock-close").onclick=closeDock;
 $("dock-ansi").onchange=()=>{$("mobile-color").checked=$("dock-ansi").checked;pollDock();};
 $("dock-focus").onclick=async()=>{const p=getPane(S.pane);if(!p)return;try{await act("focus",{pane:p.pane_id,tab:p.tab_id,agent:!!p.agent});toast("focused in Herdr TUI");refreshTree();}catch(x){toast(x.message,"err");}};
 const KEYS=[["Enter","enter"],["Alt-Enter","alt+enter"],["Esc","esc"],["Ctrl-C","ctrl+c"],["Tab","tab"],["↑","up"],["↓","down"],["←","left"],["→","right"],["y","y"],["n","n"],["1","1"],["2","2"],["3","3"],["Ctrl-D","ctrl+d"],["Ctrl-L","ctrl+l"]];
 $("dock-keys").innerHTML='<span class="hint" style="align-self:center;margin-right:4px">keys:</span>'+KEYS.map(([l,k])=>`<button class="btn" data-key="${esc(k)}">${esc(l)}</button>${k==="ctrl+c"?'<button class="btn mobile-key" data-interrupt-twice title="Send Ctrl-C twice without closing the pane">Ctrl-C ×2</button>':""}`).join("");
-$("dock-keys").addEventListener("click",async e=>{const twice=e.target.closest("[data-interrupt-twice]");if(twice){await interruptTwice();return;}const b=e.target.closest("[data-key]");if(!b||!S.pane)return;if(b.dataset.key==="alt+enter"){await submitDraft("followup");return;}try{await act("keys",{pane:S.pane,keys:[b.dataset.key]});S.dockStick=true;setTimeout(pollDock,250);}catch(x){toast(x.message,"err");}});
-$("dock-input").addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey&&!e.isComposing){e.preventDefault();if(e.altKey)submitDraft("followup");else $("dock-form").requestSubmit();}});
-$("dock-input").addEventListener("input",e=>{e.target.style.height="auto";e.target.style.height=Math.min(e.target.scrollHeight,140)+"px";});
+$("dock-keys").addEventListener("click",async e=>{const twice=e.target.closest("[data-interrupt-twice]");if(twice){await interruptTwice();return;}const b=e.target.closest("[data-key]");if(!b||!S.pane)return;if(nativeInput()){nativeKey(b.dataset.key);return;}if(b.dataset.key==="alt+enter"){await submitDraft("followup");return;}try{await act("keys",{pane:S.pane,keys:[b.dataset.key]});S.dockStick=true;setTimeout(pollDock,250);}catch(x){toast(x.message,"err");}});
+$("dock-input").addEventListener("keydown",e=>{
+  if(e.isComposing)return;
+  const key={ArrowUp:"up",ArrowDown:"down",Tab:"tab",Enter:"enter",Escape:"esc"}[e.key];
+  if(nativeInput()&&key&&!e.shiftKey&&!(nativeInput().phase==="params"&&["up","down"].includes(key))){e.preventDefault();e.stopPropagation();nativeKey(key);return;}
+  if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();if(e.altKey)submitDraft("followup");else $("dock-form").requestSubmit();}
+});
+$("dock-input").addEventListener("input",e=>{e.target.style.height="auto";e.target.style.height=Math.min(e.target.scrollHeight,140)+"px";if(!e.isComposing)mirrorNativeText();});
+$("dock-input").addEventListener("compositionend",mirrorNativeText);
 async function submitDraft(mode){
   const inp=$("dock-input"),text=inp.value,pane=S.pane;if(!pane||submitBusy)return;
+  if(nativeInput()){nativeKey("enter");return;}
   if(!text&&mode!=="send"){if(mode==="followup")toast("Type a message in the WebUI before using Alt-Enter.","err");return;}
   submitBusy=true;const send=$("dock-form").querySelector('[type="submit"]'),alt=$("dock-keys").querySelector('[data-key="alt+enter"]');send.disabled=alt.disabled=true;
   try{

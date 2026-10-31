@@ -358,7 +358,10 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError:
                     raise BridgeError("bad request", 400) from None
                 fmt = "ansi" if q.get("ansi") == "1" else "text"
-                text = herdr(["pane", "read", pane, "--source", "recent-unwrapped", "--lines", str(lines), "--format", fmt], parse=False)
+                source = q.get("source", "recent-unwrapped")
+                if source not in {"recent-unwrapped", "visible"}:
+                    raise BridgeError("invalid read source", 400)
+                text = herdr(["pane", "read", pane, "--source", source, "--lines", str(lines), "--format", fmt], parse=False)
                 return self._json(200, {"pane": pane, "text": text[-MAX_READ:]})
             return self._json(404, {"error": "not found"})
         except BridgeError as e:
