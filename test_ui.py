@@ -72,8 +72,11 @@ class FixtureHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
         if url.path == "/api/tree":
+            if self.server.delay_tree:
+                self.server.tree_started.set()
+                self.server.tree_release.wait(5)
             if self.server.fail_tree:
-                return self.reply({"error": "Fixture offline"}, 502)
+                return self.reply({"error": self.server.tree_error}, 502)
             return self.reply(self.server.tree)
         if url.path == "/api/read":
             pane = parse_qs(url.query)["pane"][0]
@@ -120,6 +123,9 @@ class PhoneUITest(unittest.TestCase):
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), FixtureHandler)
         self.httpd.tree = copy.deepcopy(TREE)
         self.httpd.fail_tree = self.httpd.fail_action = self.httpd.delay_action = False
+        self.httpd.delay_tree = False
+        self.httpd.tree_error = "Fixture offline"
+        self.httpd.tree_started, self.httpd.tree_release = threading.Event(), threading.Event()
         self.httpd.fail_page = self.httpd.deny_action = False
         self.httpd.csrf_token = "fictional-test-token"
         self.httpd.page_reads = self.httpd.post_attempts = 0
@@ -135,6 +141,7 @@ class PhoneUITest(unittest.TestCase):
         self.page.on("pageerror", lambda error: self.errors.append(str(error)))
 
     def tearDown(self):
+        self.httpd.tree_release.set()
         self.httpd.read_release.set()
         self.httpd.action_release.set()
         self.context.close()
@@ -786,14 +793,162 @@ class PhoneUITest(unittest.TestCase):
         self.assertEqual(self.page.locator("#mobile-title").inner_text(), "ui-agent")
         self.assertEqual(self.page.locator("#mobile-path").inner_text(), "Website / Build")
 
-    def test_initial_offline_state_recovers(self):
+    def test_initial_loading_state_is_distinct_from_offline(self):
+        self.httpd.delay_tree = True
+        self.page.goto(self.base)
+        self.assertTrue(self.httpd.tree_started.wait(2))
+        for width, height in ((1440, 1000), (390, 844)):
+            self.page.set_viewport_size({"width": width, "height": height})
+            self.assertTrue(self.page.locator("#connection-state").is_visible())
+            self.assertEqual(self.page.locator("#connection-title").inner_text(), "Connecting to Herdr…")
+            self.assertFalse(self.page.locator("#connection-help").is_visible())
+            self.assertFalse(self.page.locator("#mobile-empty").is_visible())
+            self.assertFalse(self.page.locator("#canvas-wrap").is_visible())
+            self.assertIn("CONNECTING", self.page.locator("#conn").inner_text())
+        self.httpd.tree_release.set()
+        self.page.wait_for_function("S.tree !== null")
+        self.assertFalse(self.page.locator("#connection-state").is_visible())
+
+    def test_initial_offline_state_recovers_automatically_with_deep_link(self):
+        self.httpd.fail_tree = True
+        self.page.goto(self.base + "/#pane=p4")
+        self.page.wait_for_function("S.err !== null")
+        self.assertTrue(self.page.locator("#connection-state").is_visible())
+        self.assertEqual(self.httpd.reads, [])
+        self.httpd.fail_tree = False
+        self.page.wait_for_function("S.tree !== null")
+        self.page.wait_for_function("document.querySelector('#mobile-title').textContent === 'review-agent'")
+        self.assertFalse(self.page.locator("#connection-state").is_visible())
+        self.assertTrue(self.page.locator("#dock").is_visible())
+        self.assertEqual(self.httpd.actions, [])
+
+    def test_offline_guidance_and_manual_retry_on_desktop_and_phone(self):
+        for width, height in ((1440, 1000), (390, 844)):
+            with self.subTest(width=width):
+                self.httpd.fail_tree, self.httpd.delay_tree = True, False
+                self.httpd.tree_started.clear()
+                self.httpd.tree_release.clear()
+                self.page.set_viewport_size({"width": width, "height": height})
+                self.page.goto(self.base)
+                self.page.wait_for_function("S.err !== null")
+                self.assertEqual(self.page.locator("#connection-title").inner_text(), "Waiting for Herdr")
+                self.assertFalse(self.page.locator("#connection-description").is_visible())
+                self.assertEqual(self.page.locator("#connection-help p").inner_text(), "Run herdr in a terminal on the dashboard host.")
+                self.assertFalse(self.page.locator("#connection-error").is_visible())
+                self.assertFalse(self.page.locator("#mobile-empty").is_visible())
+                self.assertFalse(self.page.locator("#canvas-wrap").is_visible())
+                for control in ("btn-spawn", "mobile-spawn", "mobile-nav-spawn", "mobile-agents"):
+                    self.assertTrue(self.page.locator(f"#{control}").is_disabled())
+                self.assertEqual(self.page.locator("#active-pill").text_content(), "Offline")
+                self.page.get_by_text("Connection details", exact=True).click()
+                self.assertEqual(self.page.locator("#connection-error").inner_text(), "Fixture offline")
+                with self.page.expect_response(lambda r: r.url.endswith("/api/tree") and r.status == 502):
+                    self.page.get_by_role("button", name="Retry connection").click()
+                self.page.wait_for_function("!S.busy")
+                self.assertTrue(self.page.locator("#connection-error").is_visible())
+                self.assertTrue(self.page.locator("#connection-retry").evaluate("el => el === document.activeElement"))
+                self.httpd.delay_tree = True
+                retry_width = self.page.locator("#connection-retry").bounding_box()["width"]
+                self.page.get_by_role("button", name="Retry connection").click()
+                self.assertTrue(self.httpd.tree_started.wait(2))
+                self.assertTrue(self.page.locator("#connection-retry").is_disabled())
+                self.assertEqual(self.page.locator("#connection-retry").inner_text(), "Connecting…")
+                self.assertEqual(self.page.locator("#connection-retry").get_attribute("aria-busy"), "true")
+                self.assertEqual(self.page.locator("#connection-retry").evaluate("el => getComputedStyle(el, '::before').animationName"), "spin")
+                self.assertEqual(self.page.locator("#connection-retry").bounding_box()["width"], retry_width)
+                self.page.emulate_media(reduced_motion="reduce")
+                self.assertEqual(self.page.locator("#connection-retry").evaluate("el => getComputedStyle(el, '::before').animationName"), "none")
+                self.page.emulate_media(reduced_motion="no-preference")
+                self.httpd.fail_tree = False
+                self.httpd.tree_release.set()
+                self.page.wait_for_function("S.tree !== null")
+                self.assertFalse(self.page.locator("#connection-state").is_visible())
+                self.assertFalse(self.page.locator("#btn-spawn").is_disabled())
+                self.assertTrue(self.page.locator("#dock" if width < 900 else "#canvas-wrap").is_visible())
+        self.assertEqual(self.httpd.actions, [])
+
+    def test_background_reconnect_does_not_flash_refresh_controls(self):
         self.httpd.fail_tree = True
         self.page.goto(self.base)
         self.page.wait_for_function("S.err !== null")
-        self.assertIn("Fixture offline", self.page.locator("#mobile-empty-text").inner_text())
+        self.page.locator("#connection-retry").focus()
+        self.page.evaluate("""() => {
+          window.refreshMutations = 0;
+          window.refreshObserver = new MutationObserver(records => window.refreshMutations += records.length);
+          for (const id of ['connection-retry', 'refresh-ico']) {
+            window.refreshObserver.observe(document.getElementById(id), {attributes:true, childList:true, characterData:true, subtree:true});
+          }
+        }""")
+        self.httpd.delay_tree = True
+        self.assertTrue(self.httpd.tree_started.wait(3))
+        for width, height in ((1440, 1000), (390, 844)):
+            self.page.set_viewport_size({"width": width, "height": height})
+            self.assertFalse(self.page.locator("#connection-retry").is_disabled())
+            self.assertEqual(self.page.locator("#connection-retry").inner_text(), "Retry connection")
+            self.assertIsNone(self.page.locator("#connection-retry").get_attribute("aria-busy"))
+            self.assertEqual(self.page.locator("#connection-retry").evaluate("el => getComputedStyle(el, '::before').animationName"), "none")
+            self.assertTrue(self.page.locator("#connection-retry").evaluate("el => el === document.activeElement"))
+            self.assertFalse(self.page.locator("#refresh-ico").evaluate("el => el.classList.contains('spin')"))
+        self.httpd.delay_tree = False
+        self.httpd.tree_release.set()
+        self.page.wait_for_function("!S.busy")
+        self.page.evaluate("refreshTree()")
+        self.assertEqual(self.page.evaluate("window.refreshMutations"), 0)
+        self.page.evaluate("window.refreshObserver.disconnect()")
+
+    def test_structured_connection_error_shows_code_and_message(self):
+        self.httpd.fail_tree = True
+        message = "No Herdr server is running at /tmp/demo-herdr.sock; run `herdr` to start or attach it."
+        self.httpd.tree_error = json.dumps({"id": "cli:api:snapshot", "error": {"code": "server_not_running", "message": message}})
+        self.page.goto(self.base)
+        self.page.wait_for_function("S.err !== null")
+        self.page.get_by_text("Connection details", exact=True).click()
+        self.assertEqual(self.page.locator("#connection-error-code").inner_text(), "server_not_running")
+        self.assertEqual(self.page.locator("#connection-error").inner_text(), message)
+        for width, height in ((320, 700), (844, 390), (1440, 1000)):
+            self.page.set_viewport_size({"width": width, "height": height})
+            self.page.locator("#connection-error").scroll_into_view_if_needed()
+            self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
+            self.assertTrue(self.page.locator("#connection-error").evaluate("el => el.scrollWidth <= el.clientWidth"))
+        for error in ('{"error":', '{"error":{"message":42}}', "null", "Plain-text error"):
+            with self.subTest(error=error):
+                self.httpd.tree_error = error
+                self.page.evaluate("refreshTree()")
+                self.assertEqual(self.page.locator("#connection-error").inner_text(), error)
+                self.assertFalse(self.page.locator("#connection-error-code").is_visible())
+
+    def test_offline_details_are_plain_text_and_fit_small_viewports(self):
+        self.httpd.fail_tree = True
+        self.httpd.tree_error = '<img src=x onerror="window.fixtureInjected=true">' + "x" * 600
+        self.page.goto(self.base)
+        self.page.wait_for_function("S.err !== null")
+        self.page.get_by_text("Connection details", exact=True).click()
+        self.assertEqual(self.page.locator("#connection-error").inner_text(), self.httpd.tree_error)
+        self.assertFalse(self.page.locator("#connection-error-code").is_visible())
+        self.assertEqual(self.page.locator("#connection-error img").count(), 0)
+        self.assertFalse(self.page.evaluate("Boolean(window.fixtureInjected)"))
+        for width, height in ((320, 700), (844, 390), (1440, 1000)):
+            self.page.set_viewport_size({"width": width, "height": height})
+            self.page.locator("#connection-retry").scroll_into_view_if_needed()
+            self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
+            box = self.page.locator("#connection-retry").bounding_box()
+            self.assertGreaterEqual(box["y"], 0)
+            self.assertLessEqual(box["y"] + box["height"], height)
+
+    def test_connection_loss_preserves_last_session_and_draft(self):
+        self.open("#pane=p4")
+        self.page.locator("#dock-input").fill("keep this draft")
+        self.httpd.fail_tree = True
+        self.page.evaluate("refreshTree()")
+        self.assertFalse(self.page.locator("#connection-state").is_visible())
+        self.assertTrue(self.page.locator("#dock").is_visible())
+        self.assertEqual(self.page.locator("#mobile-title").inner_text(), "review-agent")
+        self.assertIn("STALE", self.page.locator("#mobile-live").inner_text())
+        self.assertEqual(self.page.locator("#dock-input").input_value(), "keep this draft")
         self.httpd.fail_tree = False
         self.page.evaluate("refreshTree()")
-        self.assertEqual(self.page.locator("#mobile-title").inner_text(), "api-agent")
+        self.assertEqual(self.page.locator("#dock-input").input_value(), "keep this draft")
+        self.assertEqual(self.httpd.actions, [])
 
     def test_keyboard_visual_viewport_keeps_input_visible(self):
         self.open()

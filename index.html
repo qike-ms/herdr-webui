@@ -82,6 +82,20 @@ main{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(
 .canvas-wrap{flex:1;min-height:0;padding:10px;position:relative}
 .canvas{position:relative;width:100%;height:100%}
 .empty{position:absolute;inset:0;display:grid;place-items:center;color:var(--fg3);font-family:var(--mono);text-align:center}
+.connection-state{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;padding:24px;overflow:auto}
+.connection-card{width:100%;max-width:440px;margin:auto;text-align:center;color:var(--fg2)}
+.connection-card h1{margin:0 0 12px;color:var(--fg);font-size:21px}
+.connection-card p{margin:0 0 16px;line-height:1.6}
+.connection-card code{padding:2px 6px;border-radius:4px;background:var(--bg1);color:var(--cyan);font-family:var(--mono)}
+.connection-card .btn{min-height:44px;margin:6px 0}
+#connection-retry{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-width:164px}
+#connection-retry[aria-busy="true"]::before{content:"";width:12px;height:12px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:spin .8s linear infinite}
+@media(prefers-reduced-motion:reduce){#connection-retry[aria-busy="true"]::before{animation:none}}
+.connection-card details{margin-top:16px;font:11px/1.6 var(--mono);color:var(--fg3)}
+.connection-card summary{cursor:pointer}
+.connection-error{margin-top:12px;padding:12px 14px;border:1px solid var(--line2);border-radius:8px;background:var(--bg1);color:var(--fg2);font:12px/1.6 var(--mono);text-align:left}
+.connection-error-code{display:inline-block;max-width:100%;margin-bottom:8px;color:var(--amber);font-size:11px;overflow-wrap:anywhere}
+.connection-error pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:inherit}
 .pane{position:absolute;display:flex;flex-direction:column;background:var(--bg1);border:1px solid var(--line2);border-radius:10px;overflow:hidden;transition:border-color .15s,box-shadow .15s}
 .pane:hover{border-color:#3a4558}
 .pane.sel{border-color:var(--cyan);box-shadow:0 0 0 1px var(--cyan),0 0 18px #3fc1e826}
@@ -102,7 +116,7 @@ main{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(
 .btn.cy{color:var(--cyan);border-color:#1f5466;background:#0f2630}
 .btn.cy:hover{background:#13313d}
 .btn.danger{color:var(--red);border-color:#5a2730;background:#24121a}
-.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn:disabled,.hbtn:disabled,.mobile-icon:disabled,.mobile-agents-btn:disabled{opacity:.45;cursor:not-allowed}
 /* dock */
 .dock{flex:none;height:44vh;min-height:180px;display:none;flex-direction:column;border-top:1px solid var(--line2);background:var(--bg1)}
 .dock.open{display:flex}
@@ -256,38 +270,52 @@ select{background:var(--bg0);border:1px solid var(--line2);border-radius:8px;pad
     <button class="mobile-icon" id="mobile-menu" aria-label="Open spaces, tabs and panes" aria-controls="session-sidebar" aria-expanded="false">☰</button>
     <div class="mobile-title"><strong id="mobile-title">Herdr</strong><small id="mobile-path">Connecting…</small></div>
     <button class="short-only mobile-icon" id="mobile-header-more" aria-label="Pane actions" aria-expanded="false" aria-controls="mobile-actions">···</button>
-    <button class="mobile-agents-btn" id="mobile-agents" aria-label="Show all agents" aria-controls="agents-view" aria-expanded="false">Agents <span class="count" id="mobile-agent-count">0</span><span class="mobile-attention-dot" id="mobile-attention" hidden></span></button>
+    <button class="mobile-agents-btn" id="mobile-agents" disabled aria-label="Show all agents" aria-controls="agents-view" aria-expanded="false">Agents <span class="count" id="mobile-agent-count">0</span><span class="mobile-attention-dot" id="mobile-attention" hidden></span></button>
   </header>
   <header class="desktop-header">
     <div class="logo"><svg class="ico" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2 2 7l10 5 10-5-10-5zm0 12.2L4.2 10.3 2 11.4l10 5 10-5-2.2-1.1L12 14.2zm0 4.2-7.8-3.9L2 15.6l10 5 10-5-2.2-1.1L12 18.4z"/></svg>HERDR</div>
     <nav class="crumbs" id="crumbs"></nav>
     <div class="search"><span style="color:var(--fg3)">⌕</span><input id="filter" placeholder="Filter space, tab, pane… (⌘K)" autocomplete="off"></div>
-    <button class="hbtn accent" id="btn-spawn" title="New space / tab / agent">＋</button>
+    <button class="hbtn accent" id="btn-spawn" disabled title="New space / tab / agent">＋</button>
     <button class="hbtn" id="btn-refresh" title="Refresh now"><svg id="refresh-ico" class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg></button>
     <button class="hbtn" id="btn-max" title="Toggle sidebar">⛶</button>
   </header>
   <div class="body" id="body">
     <button class="nav-scrim mobile-only" id="mobile-scrim" aria-label="Close navigation" tabindex="-1"></button>
     <aside id="session-sidebar">
-      <div class="side-h"><h3>Herdr Session</h3><span class="pill" id="active-pill" style="color:var(--green)">0 active</span><button class="short-only mobile-icon" id="mobile-nav-spawn" aria-label="New session">＋</button><button class="mobile-only mobile-icon" id="mobile-nav-close" aria-label="Close navigation">✕</button></div>
+      <div class="side-h"><h3>Herdr Session</h3><span class="pill" id="active-pill" style="color:var(--fg3)">Connecting</span><button class="short-only mobile-icon" id="mobile-nav-spawn" disabled aria-label="New session">＋</button><button class="mobile-only mobile-icon" id="mobile-nav-close" aria-label="Close navigation">✕</button></div>
       <label class="mobile-only mobile-search"><input id="mobile-filter" placeholder="Find a space, tab, or pane…" aria-label="Find a space, tab or pane" autocomplete="off"></label>
       <div class="tree" id="tree"></div>
       <div class="side-f">
-        <div class="row"><span class="k">Local socket bridge</span><span id="conn" style="color:var(--fg3)">● connecting</span></div>
+        <div class="row"><span class="k">Local socket bridge</span><span id="conn" style="color:var(--fg3)">● CONNECTING</span></div>
         <div class="row"><span>Herdr</span><span id="ver">–</span></div>
         <div class="row"><span>Snapshot latency</span><span id="lat" style="color:var(--cyan)">–</span></div>
         <div class="row"><span>Spaces · Tabs · Panes</span><span id="counts">–</span></div>
         <div class="bars" id="bars" title="agent status mix"></div>
         <div class="row hint" id="legend"></div>
       </div>
-      <div class="mobile-only mobile-nav-footer"><span id="mobile-connection">Connecting…</span><button class="btn cy" id="mobile-spawn">＋ New session</button></div>
+      <div class="mobile-only mobile-nav-footer"><span id="mobile-connection">Connecting…</span><button class="btn cy" id="mobile-spawn" disabled>＋ New session</button></div>
     </aside>
     <main id="main-content">
+      <section class="connection-state" id="connection-state" aria-labelledby="connection-title">
+        <div class="connection-card">
+          <h1 id="connection-title" role="status">Connecting to Herdr…</h1>
+          <p id="connection-description">Looking for the local Herdr server.</p>
+          <div id="connection-help" hidden>
+            <p>Run <code>herdr</code> in a terminal on the dashboard host.</p>
+            <button class="btn cy" id="connection-retry">Retry connection</button>
+            <details>
+              <summary>Connection details</summary>
+              <div class="connection-error"><span class="connection-error-code" id="connection-error-code" hidden></span><pre id="connection-error"></pre></div>
+            </details>
+          </div>
+        </div>
+      </section>
       <div class="mobile-only mobile-context" id="mobile-context" hidden><span class="kind agent" id="mobile-kind"></span><span class="badge" id="mobile-status"></span><span class="connection" id="mobile-live"></span><button class="mobile-icon" id="mobile-more" aria-label="Pane actions" aria-expanded="false" aria-controls="mobile-actions">···</button></div>
       <div class="mobile-only mobile-actions" id="mobile-actions" hidden><button class="btn" id="mobile-refresh">Refresh</button><button class="btn" id="mobile-focus">Focus in Herdr</button><button class="btn" id="mobile-interrupt" title="Send Ctrl-C twice to the current pane without closing it">Ctrl-C ×2</button><button class="btn danger" id="mobile-close">Close pane</button><label class="hint"><input type="checkbox" id="mobile-color" checked> Color</label></div>
-      <div class="mobile-only mobile-empty" id="mobile-empty"><span id="mobile-empty-text">Connecting to Herdr…</span><button class="btn cy" id="mobile-empty-nav">Choose a pane</button></div>
-      <div class="tabbar" id="tabbar"></div>
-      <div class="canvas-wrap"><div class="canvas" id="canvas"></div></div>
+      <div class="mobile-only mobile-empty" id="mobile-empty" hidden><span id="mobile-empty-text">Connecting to Herdr…</span><button class="btn cy" id="mobile-empty-nav">Choose a pane</button></div>
+      <div class="tabbar" id="tabbar" hidden></div>
+      <div class="canvas-wrap" id="canvas-wrap" hidden><div class="canvas" id="canvas"></div></div>
       <section class="dock" id="dock">
         <div class="dock-resize" id="dock-resize"></div>
         <div class="dh">
@@ -443,7 +471,9 @@ const stripAnsi = s => s.replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g,"").replace(
 
 /* ---------------- data ---------------- */
 async function refreshTree(manual=false){
-  if(S.busy)return;S.busy=true;if(manual)$("refresh-ico").classList.add("spin");
+  if(S.busy)return;S.busy=true;
+  const retry=$("connection-retry"),retryFocused=manual&&document.activeElement===retry;
+  if(manual){$("refresh-ico").classList.add("spin");retry.disabled=true;retry.setAttribute("aria-busy","true");retry.textContent="Connecting…";}
   try{
     S.tree=await getJSON("/api/tree");S.err=null;
     // keep selection valid; default to the TUI's focused space/tab
@@ -452,7 +482,11 @@ async function refreshTree(manual=false){
     if(S.pane&&!getPane(S.pane)){toast(`pane ${S.pane} is gone`,"err");closeDock();}
     if(phone.matches)ensureMobilePane();
   }catch(e){reportWebUIError("ui_error","/api/tree");S.err=e.message;}
-  finally{S.busy=false;$("refresh-ico").classList.remove("spin");render();}
+  finally{
+    S.busy=false;
+    if(manual){$("refresh-ico").classList.remove("spin");retry.disabled=false;retry.removeAttribute("aria-busy");retry.textContent="Retry connection";}
+    render();if(retryFocused&&!S.tree&&document.activeElement===document.body)retry.focus({preventScroll:true});
+  }
 }
 
 const reading=new Set();
@@ -488,7 +522,26 @@ function tabMatch(t){return matches(tabName(t),t.tab_id)||panesOf(t.tab_id).some
 function wsMatch(w){return matches(wsName(w),w.workspace_id)||tabsOf(w.workspace_id).some(tabMatch);}
 
 /* ---------------- render ---------------- */
-function render(){renderSide();renderCrumbs();renderTabs();if(!phone.matches)renderCanvas();renderDockHeader();renderMobile();}
+function render(){renderConnectionState();renderSide();renderCrumbs();renderTabs();if(!phone.matches)renderCanvas();renderDockHeader();renderMobile();}
+
+function renderConnectionState(){
+  const waiting=!S.tree;
+  $("connection-state").hidden=!waiting;
+  $("tabbar").hidden=waiting;$("canvas-wrap").hidden=waiting;
+  for(const id of ["btn-spawn","mobile-spawn","mobile-nav-spawn","mobile-agents"])$(id).disabled=waiting;
+  const title=S.err?"Waiting for Herdr":"Connecting to Herdr…";
+  if($("connection-title").textContent!==title)$("connection-title").textContent=title;
+  $("connection-description").hidden=!!S.err;
+  $("connection-help").hidden=!S.err;
+  let message=S.err||"",code="";
+  try{
+    const error=JSON.parse(message)?.error;
+    if(typeof error?.message==="string"){message=error.message;if(typeof error.code==="string")code=error.code;}
+  }catch{}
+  if($("connection-error").textContent!==message)$("connection-error").textContent=message;
+  if($("connection-error-code").textContent!==code)$("connection-error-code").textContent=code;
+  $("connection-error-code").hidden=!code;
+}
 
 function renderSide(){
   const t=S.tree,el=$("tree");
@@ -496,8 +549,9 @@ function renderSide(){
   const focusKey=focused&&["toggle","pane","tab","ws"].find(k=>focused.dataset[k]);
   const focusId=focusKey&&focused.dataset[focusKey];
   const online=!!t&&!S.err;
-  $("conn").innerHTML=online?'<span style="color:var(--green)">● CONNECTED</span>':`<span style="color:var(--red)" title="${esc(S.err||"")}">● ${t?"STALE":"OFFLINE"}</span>`;
-  if(!t){el.innerHTML=`<div class="hint" style="padding:10px">${S.err?esc(S.err):"Loading…"}</div>`;return;}
+  $("conn").innerHTML=online?'<span style="color:var(--green)">● CONNECTED</span>':`<span style="color:${S.err?"var(--red)":"var(--fg3)"}" title="${esc(S.err||"")}">● ${t?"STALE":S.err?"OFFLINE":"CONNECTING"}</span>`;
+  $("active-pill").style.color=t?"var(--green)":"var(--fg3)";
+  if(!t){$("active-pill").textContent=S.err?"Offline":"Connecting";el.innerHTML=`<div class="hint" style="padding:10px">${S.err?"Waiting for Herdr. Start it to see your sessions here.":"Loading…"}</div>`;return;}
   $("ver").textContent=`v${t.version} · proto ${t.protocol}`;$("lat").textContent=`${t.latency_ms} ms`;
   $("counts").textContent=`${t.workspaces.length} · ${t.tabs.length} · ${t.panes.length}`;
   const agents=t.panes.filter(p=>p.agent);const cnt=Object.fromEntries(STATUSES.map(s=>[s,agents.filter(p=>st(p.agent_status)===s).length]));
@@ -546,7 +600,7 @@ function renderTabs(){
 
 function renderCanvas(){
   const el=$("canvas");
-  if(!S.tree){el.innerHTML=`<div class="empty">${S.err?"⚠ "+esc(S.err):"Connecting to Herdr…"}</div>`;return;}
+  if(!S.tree)return;
   if(!S.tab){el.innerHTML=`<div class="empty">No tab selected</div>`;return;}
   const ps=panesOf(S.tab),lay=layoutOf(S.tab);
   const area=lay?.area||{x:0,y:0,width:1,height:1};
@@ -663,16 +717,16 @@ function renderMobile(){
   if(!phone.matches)return;
   const p=getPane(S.pane),w=getWs(S.ws),tb=getTab(S.tab),agents=S.tree?.panes.filter(p=>p.agent)||[];
   $("mobile-title").textContent=p?paneName(p):"Herdr";
-  $("mobile-path").textContent=[w&&wsName(w),tb&&tabName(tb)].filter(Boolean).join(" / ")||"Choose a pane";
+  $("mobile-path").textContent=[w&&wsName(w),tb&&tabName(tb)].filter(Boolean).join(" / ")||(S.tree?"Choose a pane":S.err?"Waiting for Herdr":"Connecting…");
   $("mobile-agent-count").textContent=agents.length;
   const blocked=agents.filter(p=>st(p.agent_status)==="blocked").length;
   $("mobile-attention").hidden=!blocked;
   $("mobile-agents").title=blocked?`${blocked} blocked · ${agents.length} agents`:`${agents.length} agents`;
-  $("mobile-context").hidden=!p;$("mobile-empty").hidden=!!p;
+  $("mobile-context").hidden=!p;$("mobile-empty").hidden=!S.tree||!!p;
   $("mobile-close").disabled=!p||closingPanes.has(S.pane);$("mobile-interrupt").disabled=!p||interruptBusy;
   $("mobile-empty-text").textContent=S.err?`Connection unavailable: ${S.err}`:S.tree?"No panes in this tab. Choose another tab or launch a session.":"Connecting to Herdr…";
   const connected=S.tree&&!S.err;
-  $("mobile-connection").textContent=connected?"● Connected":S.tree?"● Stale":"● Offline";
+  $("mobile-connection").textContent=connected?"● Connected":S.tree?"● Stale":S.err?"● Offline":"● Connecting";
   $("mobile-live").textContent=connected?"● LIVE":S.tree?"● STALE":"● OFFLINE";
   $("mobile-live").style.color=connected?"var(--green)":"var(--amber)";
   if(p){const s=st(p.agent_status);$("mobile-kind").textContent=p.agent||"shell";$("mobile-status").className="badge "+s;$("mobile-status").innerHTML=`<span class="dot s-${s}"></span>${esc(s)}`;}
@@ -711,6 +765,7 @@ window.visualViewport?.addEventListener("scroll",syncMobileViewport);
 addEventListener("resize",syncMobileViewport);syncMobileViewport();setMobileView(null);
 
 /* ---------------- events ---------------- */
+$("connection-retry").onclick=()=>refreshTree(true).then(()=>{pollPanes();pollDock();});
 $("mobile-menu").onclick=()=>{setMobileView(mobileView==="navigation"?null:"navigation");if(!mobileView)$("mobile-menu").focus();};
 $("mobile-empty-nav").onclick=()=>setMobileView("navigation");
 $("mobile-scrim").onclick=$("mobile-nav-close").onclick=()=>{setMobileView(null);$("mobile-menu").focus();};
