@@ -408,6 +408,7 @@ const drafts = new Map();
 const closingPanes = new Set();
 const nativeInputs = new Map();
 const deferredSlashes = new Map();
+const submittingSlashes = new Set();
 let interruptBusy = false, submitBusy = false;
 
 /* ---------------- utils ---------------- */
@@ -503,7 +504,7 @@ function createNativeInput(pane,phase="command",screen=""){
 }
 function renderNativeMenu(){
   const n=nativeInput(),visible=n&&(n.failed||(!n.cancelRequested&&n.phase!=="params"));
-  $("dock-input").readOnly=!!(n&&(n.locked||n.failed));
+  $("dock-input").readOnly=submittingSlashes.has(S.pane)||!!(n&&(n.locked||n.failed));
   for(const b of $("dock-keys").querySelectorAll('[data-key^="ctrl+"]'))b.disabled=!!n;
   $("dock-keys").querySelector('[data-interrupt-twice]').disabled=!!n||interruptBusy;
   $("mobile-interrupt").disabled=!!n||interruptBusy||!getPane(S.pane);
@@ -556,9 +557,9 @@ async function syncNativeText(n,text){
   const suffix=next.slice(common).join("");if(suffix)await act("send",{pane:n.pane,text:suffix,enter:false});
   n.sent=text;
 }
-function mirrorNativeText(){
-  const text=$("dock-input").value;let n=nativeInput();
-  if(!n&&text.startsWith("/")&&getPane(S.pane)?.agent&&submitBusy){deferredSlashes.set(S.pane,text);return;}
+function mirrorNativeText(owner=nativeInput()){
+  const pane=owner?.pane||S.pane,text=S.pane===pane?$("dock-input").value:drafts.get(pane)?.text||"";let n=owner;
+  if((!n||n.cancelRequested)&&text.startsWith("/")&&getPane(pane)?.agent&&submitBusy){deferredSlashes.set(pane,text);return;}
   if(!n&&text.startsWith("/")&&getPane(S.pane)?.agent&&!submitBusy){
     n=createNativeInput(S.pane);renderNativeMenu();
   }
@@ -615,7 +616,7 @@ function nativeKeypad(n,key){
     const start=S.pane===n.pane?inp.selectionStart:text.length,end=S.pane===n.pane?inp.selectionEnd:text.length,next=text.slice(0,start)+key+text.slice(end);
     updateNativeDraft(n,next);
     if(S.pane===n.pane)inp.setSelectionRange(start+1,start+1);
-    queueNative(n,async()=>{await syncNativeText(n,next);await readNative(n,true);});return;
+    mirrorNativeText(n);return;
   }
   nativeKey(key,n);
 }
@@ -1019,13 +1020,15 @@ $("dock-input").addEventListener("keydown",e=>{
   if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();if(e.altKey)submitDraft("followup");else $("dock-form").requestSubmit();}
 });
 $("dock-input").addEventListener("input",e=>{e.target.style.height="auto";e.target.style.height=Math.min(e.target.scrollHeight,140)+"px";if(!e.isComposing)mirrorNativeText();});
-$("dock-input").addEventListener("compositionend",mirrorNativeText);
+$("dock-input").addEventListener("compositionend",()=>mirrorNativeText());
 async function submitDraft(mode){
   const inp=$("dock-input"),text=inp.value,pane=S.pane;if(!pane||submitBusy)return;
   const cancelling=nativeInput()?.cancelRequested?nativeInput():null;
   if(nativeInput()&&!cancelling){nativeKey(mode==="followup"?"alt+enter":"enter");return;}
   if(!text&&mode!=="send"){if(mode==="followup")toast("Type a message in the WebUI before using Alt-Enter.","err");return;}
-  submitBusy=true;let confirmed=false;const send=$("dock-form").querySelector('[type="submit"]'),alt=$("dock-keys").querySelector('[data-key="alt+enter"]');send.disabled=alt.disabled=true;
+  submitBusy=true;let confirmed=false;
+  if(cancelling&&text.startsWith("/")){submittingSlashes.add(pane);renderNativeMenu();}
+  const send=$("dock-form").querySelector('[type="submit"]'),alt=$("dock-keys").querySelector('[data-key="alt+enter"]');send.disabled=alt.disabled=true;
   try{
     if(cancelling){
       await cancelling.queue;if(cancelling.failed)throw new Error("Could not confirm slash cancellation; inspect the pane.");
@@ -1042,7 +1045,7 @@ async function submitDraft(mode){
     if(S.pane===pane&&inp.value===text){inp.value="";inp.style.height="auto";}S.dockStick=true;setTimeout(pollDock,300);setTimeout(refreshTree,600);
   }catch(x){toast(mode==="followup"?`${x.message} Text may already be in the terminal; inspect it before retrying.`:x.message,"err");}
   finally{
-    submitBusy=false;send.disabled=alt.disabled=false;
+    submittingSlashes.delete(pane);submitBusy=false;send.disabled=alt.disabled=false;
     if(confirmed)for(const [id,queued] of deferredSlashes){
       const current=S.pane===id?inp.value:drafts.get(id)?.text;
       if(current!==queued||!current?.startsWith("/")||nativeInputs.has(id)||!getPane(id)?.agent)continue;

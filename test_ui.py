@@ -520,6 +520,17 @@ class PhoneUITest(unittest.TestCase):
         self.assertEqual(self.httpd.native_text['p2'], '/model')
         self.assertTrue(self.page.locator('#native-menu').is_visible())
 
+    def test_native_keypad_select_all_replacement_cancels_ownership(self):
+        self.open()
+        self.page.locator('#dock-input').fill('/')
+        self.page.locator('#dock-input').press('Tab')
+        self.page.wait_for_function("document.querySelector('#dock-input').value === '/help '")
+        self.page.locator('#dock-input').evaluate('el => el.setSelectionRange(0,el.value.length)')
+        self.page.locator('[data-key="y"]').click()
+        self.page.wait_for_function('!nativeInput()')
+        self.assertEqual(self.page.locator('#dock-input').input_value(),'y')
+        self.assertEqual(self.httpd.native_text['p2'],'')
+
     def test_native_parameter_alt_enter_keyboard_and_button(self):
         self.open()
         for keyboard in (True, False):
