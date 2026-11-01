@@ -585,6 +585,19 @@ class PhoneUITest(unittest.TestCase):
         self.assertEqual(self.page.locator('#dock-input').input_value(),'keep draft')
         self.assertEqual(self.page.evaluate('S.pane'),'p2')
 
+    def test_rename_pencil_focus_survives_refresh_and_keyboard_activation(self):
+        self.open()
+        self.page.get_by_role('button',name='Open spaces, tabs and panes').click()
+        control=self.page.locator('[data-rename="space"][data-rename-id="w1"]')
+        control.focus()
+        self.page.evaluate('renderSide()')
+        self.assertTrue(control.evaluate('el => el === document.activeElement'))
+        self.page.once('dialog',lambda dialog:dialog.accept('Keyboard Space'))
+        with self.page.expect_response('**/api/action/rename'):
+            self.page.keyboard.press('Enter')
+        self.page.wait_for_function("document.querySelector('#tree').textContent.includes('Keyboard Space')")
+        self.assertTrue(control.evaluate('el => el === document.activeElement'))
+
     def test_rename_cancel_failure_and_untrusted_label(self):
         self.open()
         self.page.locator('#mobile-more').click()

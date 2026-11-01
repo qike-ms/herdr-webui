@@ -774,6 +774,7 @@ async function renameEntity(kind,id){
 }
 function renderSide(){
   const t=S.tree,el=$("tree");
+  const renameFocus=el.contains(document.activeElement)&&document.activeElement.dataset.rename?{kind:document.activeElement.dataset.rename,id:document.activeElement.dataset.renameId}:null;
   const focused=phone.matches&&el.contains(document.activeElement)?document.activeElement:null;
   const focusKey=focused&&["toggle","pane","tab","ws"].find(k=>focused.dataset[k]);
   const focusId=focusKey&&focused.dataset[focusKey];
@@ -808,7 +809,8 @@ function renderSide(){
   }
   el.innerHTML=h+"</div>";
   if(phone.matches)el.querySelectorAll(".node:not(.host),[data-toggle]").forEach(n=>{n.tabIndex=0;n.setAttribute("role","button");if(n.dataset.toggle)n.setAttribute("aria-label","Expand or collapse space");});
-  if(focusKey)el.querySelector(`[data-${focusKey}="${CSS.escape(focusId)}"]`)?.focus({preventScroll:true});
+  if(renameFocus)el.querySelector(`[data-rename="${CSS.escape(renameFocus.kind)}"][data-rename-id="${CSS.escape(renameFocus.id)}"]`)?.focus({preventScroll:true});
+  else if(focusKey)el.querySelector(`[data-${focusKey}="${CSS.escape(focusId)}"]`)?.focus({preventScroll:true});
 }
 
 function renderCrumbs(){
