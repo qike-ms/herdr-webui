@@ -1019,7 +1019,7 @@ $("canvas").addEventListener("click",async e=>{
 $("native-models").onclick=e=>{const b=e.target.closest("[data-native-model]");if(b)selectNativeModel(Number(b.dataset.nativeModel));};
 $("native-menu-reset").onclick=()=>{
   const n=nativeInput();if(!n?.failed||!confirm("Inspect and repair the input in the agent pane first. Reset browser mirroring without sending any keys?"))return;
-  nativeInputs.delete(n.pane);updateNativeDraft(n,"");renderNativeMenu();
+  finishNative(n);
 };
 $("dock-close").onclick=closeDock;
 $("dock-ansi").onchange=()=>{$("mobile-color").checked=$("dock-ansi").checked;pollDock();};
