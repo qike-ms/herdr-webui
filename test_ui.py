@@ -427,6 +427,44 @@ class PhoneUITest(unittest.TestCase):
         self.assertEqual(self.httpd.native_text['p2'], '')
         self.assertFalse(any(a[1].get('keys') == ['left'] for a in self.httpd.actions))
 
+    def test_keypad_enter_waits_for_cancel_and_rejects_failed_cancel(self):
+        self.open()
+        self.page.locator('#dock-input').fill('/')
+        self.page.wait_for_function('nativeInput()?.pending === 0')
+        self.httpd.delay_action = True
+        self.page.locator('#dock-input').fill('ordinary')
+        self.assertTrue(self.httpd.action_started.wait(2))
+        self.page.locator('[data-key="enter"]').click()
+        self.httpd.delay_action = False;self.httpd.action_release.set()
+        self.page.wait_for_function('!nativeInput()')
+        self.page.wait_for_function("!nativeInputs.has('p2')")
+        self.assertEqual([a[1].get('keys') for a in self.httpd.actions if a[0].endswith('/keys')][:2], [['backspace'],['enter']])
+        with self.page.expect_response('**/api/action/send'):
+            self.page.locator('#dock-input').fill('/')
+        self.page.wait_for_function('nativeInput()?.pending === 0')
+        self.httpd.fail_action = True
+        self.page.locator('#dock-input').fill('')
+        self.page.wait_for_function('nativeInput()?.failed')
+        count = len(self.httpd.actions)
+        self.page.locator('[data-key="enter"]').click()
+        self.page.locator('#toasts .err').last.wait_for()
+        self.assertEqual(len(self.httpd.actions), count)
+
+    def test_tab_completed_replacement_cancels_and_disables_interrupts(self):
+        self.open()
+        self.page.locator('#dock-input').fill('/')
+        self.page.locator('#dock-input').press('Tab')
+        self.page.wait_for_function("document.querySelector('#dock-input').value === '/help '")
+        self.assertTrue(self.page.locator('[data-interrupt-twice]').is_disabled())
+        self.assertTrue(self.page.locator('#mobile-interrupt').is_disabled())
+        self.page.evaluate('render()')
+        self.assertTrue(self.page.locator('#mobile-interrupt').is_disabled())
+        self.page.locator('#dock-input').fill('ordinary after tab')
+        self.page.locator('#dock-input').press('Enter')
+        self.page.wait_for_function("!nativeInput() && document.querySelector('#dock-input').value === ''")
+        self.assertEqual(self.httpd.actions[-1][0], '/api/action/prompt')
+        self.assertEqual([a[1]['text'] for a in self.httpd.actions if a[0].endswith('/send')], ['/',' '])
+
     def test_native_parameter_alt_enter_keyboard_and_button(self):
         self.open()
         for keyboard in (True, False):

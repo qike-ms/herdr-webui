@@ -503,7 +503,8 @@ function createNativeInput(pane,phase="command",screen=""){
 function renderNativeMenu(){
   const n=nativeInput(),visible=n&&(n.failed||(!n.cancelRequested&&n.phase!=="params"));
   $("dock-input").readOnly=!!(n&&(n.locked||n.failed));
-  for(const b of $("dock-keys").querySelectorAll('[data-key^="ctrl+"]'))b.disabled=!!n;
+  for(const b of $("dock-keys").querySelectorAll('[data-key^="ctrl+"],[data-interrupt-twice]'))b.disabled=!!n;
+  $("mobile-interrupt").disabled=!!n||interruptBusy||!getPane(S.pane);
   $("native-menu-reset").hidden=!n?.failed;
   $("native-menu").hidden=!visible;
   if(!visible)return;
@@ -559,7 +560,7 @@ function mirrorNativeText(){
     n=createNativeInput(S.pane);renderNativeMenu();
   }
   if(!n||n.cancelRequested)return;
-  const cancel=n.phase==="command"&&!text.startsWith("/");
+  const cancel=n.phase!=="model"&&!text.startsWith("/");
   if(cancel){n.cancelRequested=true;renderNativeMenu();}
   queueNative(n,async()=>{
     await syncNativeText(n,cancel?"":text);
@@ -839,7 +840,7 @@ async function closePane(id){
   finally{closingPanes.delete(id);renderMobile();}
 }
 async function interruptTwice(){
-  const pane=S.pane;if(!pane||interruptBusy)return;
+  const pane=S.pane;if(!pane||interruptBusy||nativeInput())return;
   interruptBusy=true;$("mobile-interrupt").disabled=true;document.querySelector("[data-interrupt-twice]").disabled=true;
   try{await act("keys",{pane,keys:["ctrl+c","ctrl+c"]});toast("Sent Ctrl-C twice; pane kept open");if(S.pane===pane)S.dockStick=true;setTimeout(pollDock,250);setTimeout(refreshTree,600);}
   catch(e){toast(e.message,"err");}
@@ -991,7 +992,9 @@ $("dock-keys").addEventListener("click",async e=>{const twice=e.target.closest("
   }
   if(key.length===1){if(!inp.readOnly){inp.setRangeText(key,inp.selectionStart,inp.selectionEnd,"end");mirrorNativeText();}return;}
   nativeKey(key);return;
-}if(b.dataset.key==="alt+enter"){await submitDraft("followup");return;}try{await act("keys",{pane:S.pane,keys:[b.dataset.key]});S.dockStick=true;setTimeout(pollDock,250);}catch(x){toast(x.message,"err");}});
+}if(b.dataset.key==="alt+enter"){await submitDraft("followup");return;}
+const pane=S.pane,cancelling=nativeInput();
+try{if(cancelling){await cancelling.queue;if(cancelling.failed)throw new Error("Could not confirm slash cancellation; inspect the pane.");}await act("keys",{pane,keys:[b.dataset.key]});S.dockStick=true;setTimeout(pollDock,250);}catch(x){toast(x.message,"err");}});
 $("dock-input").addEventListener("keydown",e=>{
   if(e.isComposing)return;
   const key=e.key==="Enter"&&e.altKey?"alt+enter":{ArrowUp:"up",ArrowDown:"down",Tab:"tab",Enter:"enter",Escape:"esc"}[e.key];
