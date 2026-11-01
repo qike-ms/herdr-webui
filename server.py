@@ -225,6 +225,18 @@ def act_split(b):
     return action_herdr(b, ["pane", "split", need_id(b, "pane"), "--direction", direction, "--no-focus"])
 
 
+def act_rename(b):
+    kind = b.get("kind")
+    if kind not in ("pane", "tab", "space"):
+        raise BridgeError("invalid rename kind", 400)
+    target = need_id(b, "id")
+    label = b.get("label")
+    if (not isinstance(label, str) or not label.strip() or len(label) > 120
+            or label.startswith("-") or any(ord(c) < 32 or ord(c) == 127 for c in label)):
+        raise BridgeError("invalid label", 400)
+    return action_herdr(b, ["workspace" if kind == "space" else kind, "rename", target, label])
+
+
 def act_close(b):
     return action_herdr(b, ["pane", "close", need_id(b, "pane")])
 
@@ -251,7 +263,7 @@ def act_spawn(b):
 
 
 ACTIONS = {"send": act_send, "keys": act_keys, "followup": act_followup, "prompt": act_prompt, "focus": act_focus,
-           "split": act_split, "close": act_close, "spawn": act_spawn}
+           "split": act_split, "close": act_close, "spawn": act_spawn, "rename": act_rename}
 
 
 # -------------------------------------------------------------------- server
@@ -402,7 +414,10 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError:
                     raise BridgeError("bad request", 400) from None
                 fmt = "ansi" if q.get("ansi") == "1" else "text"
-                text = herdr(["pane", "read", pane, "--source", "recent-unwrapped", "--lines", str(lines), "--format", fmt], parse=False, machine=target["id"])
+                source = q.get("source", "recent-unwrapped")
+                if source not in {"recent-unwrapped", "visible"}:
+                    raise BridgeError("invalid read source", 400)
+                text = herdr(["pane", "read", pane, "--source", source, "--lines", str(lines), "--format", fmt], parse=False, machine=target["id"])
                 return self._json(200, {"pane": pane, "text": text[-MAX_READ:]})
             return self._json(404, {"error": "not found"})
         except BridgeError as e:

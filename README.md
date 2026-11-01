@@ -252,6 +252,38 @@ is no live model-switch endpoint in this bridge. The proposed production
 companion must run separately so it remains reachable when the bridge fails.
 See [mockup notes](docs/mockups/README.md).
 
+## Rename spaces, tabs and panes
+
+Use the **✎ Rename** button beside any space, tab or pane in Workspace navigation
+(on desktop or phone). The selected pane also has **Rename pane** in its inspector
+header or phone **···** actions. Edit the pre-filled name and confirm; Cancel sends
+nothing. Names may contain up to 120 characters, but must be nonempty and contain
+no control characters or leading dash. Renaming updates displayed names without
+moving focus, interrupting agents, or changing message drafts.
+
+## Native slash commands and models
+
+In an agent pane, typing `/` immediately types it into that pane **without Enter**.
+The composer shows the agent's live viewport, including its own command list,
+selection highlight and page count—not a hardcoded catalogue. Up/Down forwards
+the same key to the agent; Enter executes its selection. Tab completes in the
+agent, copies the confirmed prefix into the composer, and leaves room for
+parameters. Enter then submits once, without retyping the prefix.
+
+Choose `/model` with Enter to open the agent's native model picker. The WebUI
+shows selectable model rows from its live viewport: click/tap a row to select it,
+or use Up/Down and Enter even when the composer is not focused. Reopening the
+WebUI while the native model picker is open restores these controls. This is single-pane native control, unrelated
+to the simulated multi-agent Change model preview above. Commands and models
+remain runtime-specific; only the currently visible native page is shown.
+
+Input is serialized per pane. Completion/selection briefly locks editing;
+uncertain delivery preserves the draft and stops further forwarding. Inspect
+and repair the terminal input before using **Reset after inspecting pane**.
+Menus and drafts stay attached to their original pane. Shell panes and ordinary
+messages retain their existing delivery modes. Use slash mirroring only when
+the agent's editor is ready for input; do not mix it with direct terminal typing.
+
 ## Security model
 
 This UI can type into your terminals, so it is deliberately loopback-bound:
@@ -279,7 +311,7 @@ not a password or a tailnet firewall rule.
 | Method | Path | Herdr call |
 | --- | --- | --- |
 | GET | `/api/tree` | `api snapshot` (normalized, cached 1s) |
-| GET | `/api/read?pane=ID&lines=N&ansi=1` | `pane read --source recent-unwrapped` |
+| GET | `/api/read?pane=ID&lines=N&ansi=1` | `pane read --source recent-unwrapped` (`source=visible` for native menus) |
 | POST | `/api/action/send` `{pane,text,enter}` | `pane run` / `pane send-text` |
 | POST | `/api/action/keys` `{pane,keys[]}` | `pane send-keys` |
 | POST | `/api/action/followup` `{pane,text}` | `pane send-text`, then `pane send-keys alt+enter` |
@@ -287,6 +319,7 @@ not a password or a tailnet firewall rule.
 | POST | `/api/action/focus` `{pane,tab,agent}` | `agent focus` / `tab focus` |
 | POST | `/api/action/split` `{pane,direction}` | `pane split --no-focus` |
 | POST | `/api/action/close` `{pane}` | `pane close` |
+| POST | `/api/action/rename` `{kind,id,label}` | `pane` / `tab` / `workspace rename` (`kind=space` for workspace) |
 | POST | `/api/action/spawn` `{workspace?,space_label?,tab_label?,kind?,name?}` | `workspace create` / `tab create` [+ `agent start`] |
 
 ## Test

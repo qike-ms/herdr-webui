@@ -95,6 +95,19 @@ class FixtureHandler(BaseHTTPRequestHandler):
             if pane == self.server.delay_pane and "machine" not in parse_qs(url.query):
                 self.server.read_started.set()
                 self.server.read_release.wait(5)
+            if parse_qs(url.query).get("source") == ["visible"]:
+                text = self.server.native_text.get(pane, "")
+                if pane in self.server.model_panes:
+                    selected = self.server.native_selected.get(pane, 0) % 2
+                    screen = ">\n" + "\n".join(("→ " if i == selected else "  ") + name for i, name in enumerate(("Model Alpha", "Model Beta"))) + "\nEnter to select · Escape to cancel"
+                elif text and " " not in text:
+                    selected = self.server.native_selected.get(pane, 0) % 2
+                    screen = text + "\n" + "\n".join(("→ " if i == selected else "  ") + name for i, name in enumerate(("help    Show help", "model   Select model")))
+                else:
+                    screen = text + "\nReady"
+                return self.reply({"text": screen})
+            if pane in self.server.model_panes:
+                return self.reply({"text": ">\n→ Model Alpha\n  Model Beta\nEnter to select · Escape to cancel"})
             prefix = "Remote " if parse_qs(url.query).get("machine") == ["worker-a"] else ""
             return self.reply({"text": f"{prefix}Terminal output for {pane}\n\x1b[32mReady\x1b[0m\n"})
         self.reply({"error": "not found"}, 404)
@@ -115,6 +128,29 @@ class FixtureHandler(BaseHTTPRequestHandler):
         self.server.actions.append((self.path, body, self.headers.get("X-CSRF-Token")))
         if self.server.fail_action:
             return self.reply({"error": "Fixture action failed"}, 502)
+        if self.path == "/api/action/send" and not body.get("enter", True):
+            self.server.native_text[body["pane"]] = self.server.native_text.get(body["pane"], "") + body["text"]
+        if self.path == "/api/action/keys":
+            pane = body["pane"]
+            for key in body["keys"]:
+                text = self.server.native_text.get(pane, "")
+                if key == "backspace":
+                    self.server.native_text[pane] = text[:-1]
+                elif key in ("up", "down"):
+                    self.server.native_selected[pane] = self.server.native_selected.get(pane, 0) + (1 if key == "down" else -1)
+                elif key == "tab":
+                    self.server.native_text[pane] = "/model" if self.server.native_selected.get(pane, 0) % 2 else "/help"
+                elif key in ("enter", "alt+enter"):
+                    if pane in self.server.model_panes:
+                        self.server.model_panes.remove(pane)
+                    elif text.strip() == "/model" or (" " not in text and self.server.native_selected.get(pane, 0) % 2):
+                        self.server.model_panes.add(pane)
+                    self.server.native_text[pane] = ""
+                elif key == "esc":
+                    self.server.model_panes.discard(pane)
+        if self.path == "/api/action/rename":
+            collection, key = {"pane": ("panes", "pane_id"), "tab": ("tabs", "tab_id"), "space": ("workspaces", "workspace_id")}[body["kind"]]
+            next(item for item in self.server.tree[collection] if item[key] == body["id"])["label"] = body["label"]
         if self.path == "/api/action/close":
             self.server.tree["panes"] = [p for p in self.server.tree["panes"] if p["pane_id"] != body["pane"]]
         self.reply({"ok": True, "result": {"ok": True}})
@@ -143,6 +179,7 @@ class PhoneUITest(unittest.TestCase):
         self.httpd.page_reads = self.httpd.post_attempts = 0
         self.httpd.action_started, self.httpd.action_release = threading.Event(), threading.Event()
         self.httpd.actions, self.httpd.reads, self.httpd.reports = [], [], []
+        self.httpd.native_text, self.httpd.native_selected, self.httpd.model_panes = {}, {}, set()
         self.httpd.delay_pane = None
         self.httpd.read_started, self.httpd.read_release = threading.Event(), threading.Event()
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
@@ -168,6 +205,457 @@ class PhoneUITest(unittest.TestCase):
     def choose(self, pane):
         self.page.get_by_role("button", name="Show all agents").click()
         self.page.locator(f'[data-agent-pane="{pane}"]').click()
+
+    def test_slash_menu_forwards_arrows_and_enter_once(self):
+        self.open()
+        self.page.locator("#dock-input").fill("/")
+        self.page.locator("#native-menu-output").get_by_text("Show help", exact=False).wait_for()
+        self.assertEqual(self.httpd.actions[0][1], {"pane": "p2", "text": "/", "enter": False})
+        self.page.locator("#dock-input").press("ArrowDown")
+        self.page.wait_for_function("nativeInput().pending === 0")
+        self.assertIn("→ model", self.page.locator("#native-menu-output").inner_text())
+        self.page.locator("#dock-input").press("ArrowUp")
+        self.page.locator("#dock-input").press("Enter")
+        self.page.wait_for_function("!nativeInput()")
+        self.assertEqual([a[1]["keys"] for a in self.httpd.actions if a[0].endswith("/keys")], [["down"], ["up"], ["enter"]])
+        self.assertFalse(any(a[0].endswith("/prompt") for a in self.httpd.actions))
+
+    def test_native_tab_parameters_do_not_duplicate_prefix(self):
+        self.open()
+        self.page.locator("#dock-input").fill("/")
+        self.page.wait_for_function("nativeInput()?.pending === 0")
+        self.page.locator("#dock-input").press("Tab")
+        self.page.wait_for_function("document.querySelector('#dock-input').value === '/help '")
+        self.page.locator("#dock-input").press_sequentially("topic")
+        self.page.locator("#dock-input").press("Enter")
+        self.page.wait_for_function("!nativeInput()")
+        typed = "".join(a[1]["text"] for a in self.httpd.actions if a[0].endswith("/send"))
+        self.assertEqual(typed, "/ topic")  # /help was completed by the native Tab.
+        self.assertEqual(self.httpd.actions[-1][1], {"pane": "p2", "keys": ["enter"]})
+
+    def test_model_picker_arrows_and_enter_select(self):
+        self.open()
+        self.page.locator("#dock-input").fill("/model")
+        self.page.locator("#dock-input").press("Enter")
+        self.page.wait_for_function("nativeInput()?.phase === 'model' && nativeInput().pending === 0")
+        self.assertIn("Model Alpha", self.page.locator("#native-menu-output").inner_text())
+        self.page.locator('[data-key="down"]').click()
+        self.page.wait_for_function("nativeInput().pending === 0")
+        self.assertIn("→ Model Beta", self.page.locator("#native-menu-output").inner_text())
+        self.page.locator("#dock-input").press("Enter")
+        self.page.wait_for_function("!nativeInput()")
+        self.assertEqual(self.page.locator("#dock-input").input_value(), "")
+        self.assertFalse(self.httpd.model_panes)
+
+    def test_model_buttons_select_native_row_without_composer_focus(self):
+        self.open()
+        self.page.locator("#dock-input").fill("/model")
+        self.page.locator("#dock-input").press("Enter")
+        self.page.wait_for_function("nativeInput()?.phase === 'model' && nativeInput().pending === 0")
+        self.page.get_by_role("option", name="Model Beta").focus()
+        self.page.keyboard.press("ArrowDown")
+        self.page.wait_for_function("nativeInput().pending === 0")
+        self.assertEqual(self.page.get_by_role("option", name="→ Model Beta").get_attribute('aria-selected'), 'true')
+        self.page.get_by_role("option", name="Model Alpha").click()
+        self.page.wait_for_function("!nativeInput()")
+        self.assertEqual(self.httpd.actions[-2][1], {"pane": "p2", "keys": ["up"]})
+        self.assertEqual(self.httpd.actions[-1][1], {"pane": "p2", "keys": ["enter"]})
+
+    def test_open_model_picker_is_adopted_after_reload(self):
+        self.httpd.model_panes.add('p2')
+        self.open()
+        self.page.wait_for_function("nativeInput()?.phase === 'model'")
+        self.page.locator("#dock-input").blur()
+        self.page.keyboard.press("ArrowDown")
+        self.page.wait_for_function("nativeInput().pending === 0")
+        self.assertTrue(self.page.get_by_role('option', name='→ Model Beta').is_visible())
+        self.page.keyboard.press("Enter")
+        self.page.wait_for_function("!nativeInput()")
+
+    def test_model_picker_from_tab_completed_command(self):
+        self.open()
+        self.page.locator("#dock-input").fill("/")
+        self.page.locator("#dock-input").press("ArrowDown")
+        self.page.locator("#dock-input").press("Tab")
+        self.page.wait_for_function("document.querySelector('#dock-input').value === '/model '")
+        self.page.locator("#dock-input").press("Enter")
+        self.page.wait_for_function("nativeInput()?.phase === 'model' && nativeInput().pending === 0")
+        self.assertIn("Model Alpha", self.page.locator("#native-menu-output").inner_text())
+
+    def test_native_transition_locks_edits_and_duplicate_enter(self):
+        self.open()
+        self.page.locator("#dock-input").fill("/model")
+        self.page.wait_for_function("nativeInput()?.pending === 0")
+        self.httpd.delay_action = True
+        self.page.locator("#dock-input").press("Enter")
+        self.assertTrue(self.httpd.action_started.wait(2))
+        self.assertTrue(self.page.locator("#dock-input").evaluate("el => el.readOnly"))
+        self.page.locator("#dock-input").press("Enter")
+        self.httpd.delay_action = False
+        self.httpd.action_release.set()
+        self.page.wait_for_function("nativeInput()?.phase === 'model' && nativeInput().pending === 0")
+        self.assertEqual([a[1].get("keys") for a in self.httpd.actions if a[0].endswith("/keys")], [["enter"]])
+
+    def test_native_editing_and_csrf_refresh_preserve_order(self):
+        self.open()
+        self.httpd.csrf_token = "fictional-refreshed-token"
+        self.page.locator("#dock-input").fill("/hello")
+        self.page.wait_for_function("nativeInput()?.pending === 0")
+        self.page.locator("#dock-input").fill("/help")
+        self.page.wait_for_function("nativeInput().pending === 0")
+        self.assertEqual(self.httpd.native_text['p2'], '/help')
+        self.assertEqual(self.httpd.page_reads, 2)
+        self.assertEqual(self.httpd.actions[1][1], {"pane": "p2", "keys": ["backspace", "backspace"]})
+        self.page.locator("#dock-input").press("Escape")
+        self.page.wait_for_function("!nativeInput()")
+        self.assertEqual(self.httpd.native_text['p2'], '')
+
+    def test_native_fast_typing_is_ordered_before_keys(self):
+        self.open()
+        self.httpd.delay_action = True
+        self.page.locator("#dock-input").fill("/")
+        self.assertTrue(self.httpd.action_started.wait(2))
+        self.page.locator("#dock-input").fill("/model")
+        self.page.locator("#dock-input").press("Enter")
+        self.httpd.delay_action = False
+        self.httpd.action_release.set()
+        self.page.wait_for_function("nativeInput()?.phase === 'model' && nativeInput().pending === 0")
+        self.assertEqual([(a[0].split('/')[-1], a[1].get('text', a[1].get('keys'))) for a in self.httpd.actions], [("send", "/"), ("send", "model"), ("keys", ["enter"])])
+
+    def test_native_pane_switch_keeps_menu_and_input_isolated(self):
+        self.open()
+        self.page.locator("#dock-input").fill("/")
+        self.page.wait_for_function("nativeInput()?.pending === 0")
+        self.choose("p1")
+        self.assertFalse(self.page.locator("#native-menu").is_visible())
+        self.page.locator("#dock-input").fill("ordinary draft")
+        self.choose("p2")
+        self.assertTrue(self.page.locator("#native-menu").is_visible())
+        self.page.locator("#dock-input").press("Escape")
+        self.page.wait_for_function("!nativeInput()")
+        self.choose("p1")
+        self.assertEqual(self.page.locator("#dock-input").input_value(), "ordinary draft")
+        self.assertTrue(all(a[1]['pane'] == 'p2' for a in self.httpd.actions))
+
+    def test_native_failure_preserves_draft_and_never_retries(self):
+        self.open()
+        self.httpd.fail_action = True
+        self.page.locator("#dock-input").fill("/")
+        self.page.wait_for_function("nativeInput()?.failed")
+        self.page.locator("#dock-input").press("Enter")
+        self.page.wait_for_function("nativeInput().pending === 0")
+        self.assertEqual(len(self.httpd.actions), 1)
+        self.assertEqual(self.page.locator("#dock-input").input_value(), "/")
+        self.assertIn("uncertain", self.page.locator("#native-menu-title").inner_text())
+
+    def test_deleting_slash_restores_local_composer(self):
+        self.open()
+        self.page.locator("#dock-input").fill("/")
+        self.page.wait_for_function("nativeInput()?.pending === 0")
+        self.page.locator("#dock-input").fill("")
+        self.page.wait_for_function("!nativeInput()")
+        self.assertFalse(self.page.locator("#native-menu").is_visible())
+        self.page.locator("#dock-input").fill("ordinary message")
+        with self.page.expect_response("**/api/action/prompt"):
+            self.page.locator("#dock-input").press("Enter")
+        self.assertEqual(self.httpd.actions[-1][1], {"pane": "p2", "text": "ordinary message"})
+
+    def test_fast_slash_deletion_keeps_new_message_local(self):
+        self.open()
+        self.page.locator('#dock-input').fill('/')
+        self.page.wait_for_function('nativeInput()?.pending === 0')
+        self.httpd.delay_action = True
+        self.page.locator('#dock-input').fill('')
+        self.assertTrue(self.httpd.action_started.wait(2))
+        self.page.locator('#dock-input').fill('ordinary after cancellation')
+        self.page.locator('#dock-input').press('Enter')
+        self.httpd.delay_action = False
+        self.httpd.action_release.set()
+        self.page.wait_for_function("document.querySelector('#dock-input').value === '' && !nativeInput()")
+        self.assertEqual(self.httpd.actions[-1][0], '/api/action/prompt')
+        self.assertEqual(self.httpd.actions[-1][1]['text'], 'ordinary after cancellation')
+        self.assertEqual([a[1]['text'] for a in self.httpd.actions if a[0].endswith('/send')], ['/'])
+
+    def test_native_down_cannot_unlock_queued_tab(self):
+        self.open()
+        self.page.locator('#dock-input').fill('/')
+        self.page.wait_for_function('nativeInput()?.pending === 0')
+        self.httpd.delay_action = True
+        self.page.locator('#dock-input').press('ArrowDown')
+        self.assertTrue(self.httpd.action_started.wait(2))
+        self.page.locator('#dock-input').press('Tab')
+        self.httpd.delay_action = False
+        self.httpd.action_release.set()
+        self.page.wait_for_function("nativeInput()?.sent === '/model '")
+        self.assertEqual([a[1].get('keys') for a in self.httpd.actions if a[0].endswith('/keys')], [['down'],['tab']])
+        self.page.wait_for_function('nativeInput().pending === 0')
+        self.assertFalse(self.page.locator('#dock-input').evaluate('el => el.readOnly'))
+
+    def test_failed_native_cancellation_exposes_reset(self):
+        self.open()
+        self.page.locator('#dock-input').fill('/')
+        self.page.wait_for_function('nativeInput()?.pending === 0')
+        self.httpd.fail_action = True
+        self.page.locator('#dock-input').fill('')
+        self.page.wait_for_function('nativeInput()?.failed')
+        self.assertTrue(self.page.locator('#native-menu-reset').is_visible())
+        self.assertTrue(self.page.locator('#dock-input').evaluate('el => el.readOnly'))
+
+    def test_replacing_slash_draft_keeps_message_local(self):
+        self.open()
+        self.page.locator('#dock-input').fill('/help')
+        self.page.wait_for_function('nativeInput()?.pending === 0')
+        self.page.locator('#dock-input').fill('ordinary replacement')
+        self.page.locator('#dock-input').press('Enter')
+        self.page.wait_for_function("!nativeInput() && document.querySelector('#dock-input').value === ''")
+        self.assertEqual(self.httpd.actions[-1][0], '/api/action/prompt')
+        self.assertEqual([a[1]['text'] for a in self.httpd.actions if a[0].endswith('/send')], ['/help'])
+
+    def test_alt_enter_button_waits_for_native_cancellation(self):
+        self.open()
+        self.page.locator('#dock-input').fill('/')
+        self.page.wait_for_function('nativeInput()?.pending === 0')
+        self.httpd.delay_action = True
+        self.page.locator('#dock-input').fill('normal followup')
+        self.assertTrue(self.httpd.action_started.wait(2))
+        self.page.locator('[data-key="alt+enter"]').click()
+        self.httpd.delay_action = False;self.httpd.action_release.set()
+        self.page.wait_for_function("!nativeInput() && document.querySelector('#dock-input').value === ''")
+        self.assertEqual(self.httpd.actions[-1][0], '/api/action/followup')
+        self.assertEqual(self.httpd.actions[-1][1]['text'], 'normal followup')
+
+    def test_native_menus_and_saved_drafts_are_isolated_by_host(self):
+        self.open()
+        self.page.locator('#dock-input').fill('/help local')
+        self.page.wait_for_function('nativeInput()?.pending === 0')
+        self.page.evaluate('switchMachine("worker-a")')
+        self.page.wait_for_function('S.machine === "worker-a" && S.pane === "p2"')
+        self.assertTrue(self.page.evaluate('!nativeInput()'))
+        self.assertEqual(self.page.locator('#dock-input').input_value(), '')
+        self.page.locator('#dock-input').fill('/help remote')
+        self.page.wait_for_function('nativeInput()?.pending === 0')
+        self.assertEqual(self.httpd.actions[-1][1]['machine'], 'worker-a')
+        self.assertEqual(self.page.evaluate('drafts.get("local/p2")?.text'), '/help local')
+        self.page.evaluate('switchMachine("local")')
+        self.page.wait_for_function('S.machine === "local" && S.pane === "p2"')
+        self.assertEqual(self.page.locator('#dock-input').input_value(), '/help local')
+        self.assertEqual(self.page.evaluate('nativeInput().sent'), '/help local')
+
+    def test_native_keypad_edits_stay_in_owned_browser_draft(self):
+        self.open()
+        self.page.locator('#dock-input').fill('/')
+        self.page.locator('#dock-input').press('Tab')
+        self.page.wait_for_function("document.querySelector('#dock-input').value === '/help '")
+        self.page.locator('[data-key="1"]').click()
+        self.page.locator('[data-key="left"]').click()
+        self.page.locator('[data-key="y"]').click()
+        self.page.wait_for_function('nativeInput().pending === 0')
+        self.assertEqual(self.httpd.native_text['p2'], self.page.locator('#dock-input').input_value())
+        self.page.locator('#dock-input').fill('/help changed')
+        self.page.wait_for_function('nativeInput().pending === 0')
+        self.assertEqual(self.httpd.native_text['p2'], '/help changed')
+        self.page.locator('#dock-input').press('Escape')
+        self.page.wait_for_function('!nativeInput()')
+        self.assertEqual(self.httpd.native_text['p2'], '')
+        self.assertFalse(any(a[1].get('keys') == ['left'] for a in self.httpd.actions))
+
+    def test_keypad_enter_waits_for_cancel_and_rejects_failed_cancel(self):
+        self.open()
+        self.page.locator('#dock-input').fill('/')
+        self.page.wait_for_function('nativeInput()?.pending === 0')
+        self.httpd.delay_action = True
+        self.page.locator('#dock-input').fill('ordinary')
+        self.assertTrue(self.httpd.action_started.wait(2))
+        self.page.locator('[data-key="enter"]').click()
+        self.httpd.delay_action = False;self.httpd.action_release.set()
+        self.page.wait_for_function('!nativeInput()')
+        self.page.wait_for_function("!nativeInputs.has('p2')")
+        self.assertEqual([a[1].get('keys') for a in self.httpd.actions if a[0].endswith('/keys')][:2], [['backspace'],['enter']])
+        with self.page.expect_response('**/api/action/send'):
+            self.page.locator('#dock-input').fill('/')
+        self.page.wait_for_function('nativeInput()?.pending === 0')
+        self.httpd.fail_action = True
+        self.page.locator('#dock-input').fill('')
+        self.page.wait_for_function('nativeInput()?.failed')
+        count = len(self.httpd.actions)
+        self.page.locator('[data-key="enter"]').click()
+        self.page.locator('#toasts .err').last.wait_for()
+        self.assertEqual(len(self.httpd.actions), count)
+
+    def test_tab_completed_replacement_cancels_and_disables_interrupts(self):
+        self.open()
+        self.page.locator('#dock-input').fill('/')
+        self.page.locator('#dock-input').press('Tab')
+        self.page.wait_for_function("document.querySelector('#dock-input').value === '/help '")
+        self.assertTrue(self.page.locator('[data-interrupt-twice]').is_disabled())
+        self.assertTrue(self.page.locator('#mobile-interrupt').is_disabled())
+        self.page.evaluate('render()')
+        self.assertTrue(self.page.locator('#mobile-interrupt').is_disabled())
+        self.page.locator('#dock-input').fill('ordinary after tab')
+        self.page.locator('#dock-input').press('Enter')
+        self.page.wait_for_function("!nativeInput() && document.querySelector('#dock-input').value === ''")
+        self.assertEqual(self.httpd.actions[-1][0], '/api/action/prompt')
+        self.assertEqual([a[1]['text'] for a in self.httpd.actions if a[0].endswith('/send')], ['/',' '])
+
+    def test_slash_initialization_waits_for_ordinary_submit(self):
+        self.open()
+        self.httpd.delay_action = True
+        self.page.locator('#dock-input').fill('ordinary')
+        self.page.locator('#dock-input').press('Enter')
+        self.assertTrue(self.httpd.action_started.wait(2))
+        self.page.locator('#dock-input').fill('/')
+        self.assertEqual(self.httpd.actions, [])
+        self.httpd.delay_action = False;self.httpd.action_release.set()
+        self.page.wait_for_function('nativeInput()?.pending === 0')
+        self.assertEqual([a[0].split('/')[-1] for a in self.httpd.actions], ['prompt','send'])
+        self.assertEqual(self.httpd.native_text['p2'], '/')
+
+    def test_keypad_enter_joins_reacquired_slash_owner(self):
+        self.open()
+        self.page.locator('#dock-input').fill('/')
+        self.page.wait_for_function('nativeInput()?.pending === 0')
+        self.httpd.delay_action = True
+        self.page.locator('#dock-input').fill('')
+        self.assertTrue(self.httpd.action_started.wait(2))
+        self.page.locator('#dock-input').fill('/model')
+        self.page.locator('[data-key="enter"]').click()
+        self.httpd.delay_action = False;self.httpd.action_release.set()
+        self.page.wait_for_function("nativeInput()?.phase === 'model' && nativeInput().pending === 0")
+        self.assertEqual([(a[0].split('/')[-1],a[1].get('text',a[1].get('keys'))) for a in self.httpd.actions], [('send','/'),('keys',['backspace']),('send','/model'),('keys',['enter'])])
+
+    def test_composer_enter_reacquires_slash_after_cancel_in_type_mode(self):
+        self.open()
+        self.page.locator('#dock-mode').select_option('type')
+        self.page.locator('#dock-input').fill('/')
+        self.page.wait_for_function('nativeInput()?.pending === 0')
+        self.httpd.delay_action = True
+        self.page.locator('#dock-input').fill('')
+        self.assertTrue(self.httpd.action_started.wait(2))
+        self.page.locator('#dock-input').fill('/')
+        self.page.locator('#dock-input').press('Enter')
+        self.httpd.delay_action = False;self.httpd.action_release.set()
+        self.page.wait_for_function("!nativeInput() && document.querySelector('#dock-input').value === ''")
+        self.assertEqual(self.httpd.actions[-1][1], {'pane':'p2','keys':['enter']})
+
+    def test_retyped_slash_survives_cancel_and_pane_switch(self):
+        self.open()
+        self.page.locator('#dock-input').fill('/')
+        self.page.wait_for_function('nativeInput()?.pending === 0')
+        self.httpd.delay_action = True
+        self.page.locator('#dock-input').fill('')
+        self.assertTrue(self.httpd.action_started.wait(2))
+        self.page.locator('#dock-input').fill('/model')
+        self.choose('p1')
+        self.httpd.delay_action = False;self.httpd.action_release.set()
+        self.page.wait_for_function("nativeInputs.get('p2')?.pending === 0")
+        self.choose('p2')
+        self.assertEqual(self.httpd.native_text['p2'], '/model')
+        self.assertTrue(self.page.locator('#native-menu').is_visible())
+
+    def test_native_keypad_select_all_replacement_cancels_ownership(self):
+        self.open()
+        self.page.locator('#dock-input').fill('/')
+        self.page.locator('#dock-input').press('Tab')
+        self.page.wait_for_function("document.querySelector('#dock-input').value === '/help '")
+        self.page.locator('#dock-input').evaluate('el => el.setSelectionRange(0,el.value.length)')
+        self.page.locator('[data-key="y"]').click()
+        self.page.wait_for_function('!nativeInput()')
+        self.assertEqual(self.page.locator('#dock-input').input_value(),'y')
+        self.assertEqual(self.httpd.native_text['p2'],'')
+
+    def test_native_slash_waits_for_pending_raw_key(self):
+        self.open()
+        self.httpd.delay_action = True
+        self.page.locator('[data-key="enter"]').click()
+        self.assertTrue(self.httpd.action_started.wait(2))
+        self.page.locator('#dock-input').fill('/model')
+        self.httpd.delay_action = False;self.httpd.action_release.set()
+        self.page.wait_for_function('nativeInput()?.pending === 0')
+        self.assertEqual([(a[0].split('/')[-1],a[1].get('text',a[1].get('keys'))) for a in self.httpd.actions], [('keys',['enter']),('send','/model')])
+
+    def test_native_parameter_alt_enter_keyboard_and_button(self):
+        self.open()
+        for keyboard in (True, False):
+            self.page.locator('#dock-input').fill('/')
+            self.page.locator('#dock-input').press('Tab')
+            self.page.wait_for_function("document.querySelector('#dock-input').value === '/help '")
+            self.page.locator('#dock-input').press_sequentially('topic')
+            if keyboard:
+                self.page.locator('#dock-input').press('Alt+Enter')
+            else:
+                self.page.locator('[data-key="alt+enter"]').click()
+            self.page.wait_for_function('!nativeInput()')
+            self.assertEqual(self.httpd.actions[-1][1], {'pane':'p2','keys':['alt+enter']})
+            self.assertEqual(self.page.locator('#dock-input').input_value(), '')
+            self.assertEqual(self.httpd.native_text['p2'], '')
+
+    def test_shell_slash_remains_local(self):
+        self.open("#pane=p3")
+        self.page.locator("#dock-input").fill("/usr/bin/example")
+        self.assertFalse(self.page.locator("#native-menu").is_visible())
+        self.assertEqual(self.httpd.actions, [])
+        with self.page.expect_response("**/api/action/send"):
+            self.page.locator("#dock-input").press("Enter")
+        self.assertEqual(self.httpd.actions[-1][1], {"pane": "p3", "text": "/usr/bin/example", "enter": True})
+
+    def test_navigation_renames_all_entity_types_without_selection_or_draft_changes(self):
+        self.open()
+        self.page.locator('#dock-input').fill('keep draft')
+        self.page.get_by_role('button', name='Open spaces, tabs and panes').click()
+        for kind, target, label in (('space','w1','Renamed Space'),('tab','t1','Renamed Tab'),('pane','p2','Renamed Pane')):
+            self.page.once('dialog', lambda dialog, label=label: dialog.accept(label))
+            with self.page.expect_response('**/api/action/rename'):
+                self.page.locator(f'[data-rename="{kind}"][data-rename-id="{target}"]').click()
+            self.page.wait_for_function(f"document.querySelector('#tree').textContent.includes('{label}')")
+            self.assertEqual(self.httpd.actions[-1][1], {'kind':kind,'id':target,'label':label})
+        self.page.locator('#mobile-nav-close').click()
+        self.assertEqual(self.page.locator('#mobile-title').inner_text(),'Renamed Pane')
+        self.assertEqual(self.page.locator('#mobile-path').inner_text(),'Renamed Space / Renamed Tab')
+        self.assertEqual(self.page.locator('#dock-input').input_value(),'keep draft')
+        self.assertEqual(self.page.evaluate('S.pane'),'p2')
+
+    def test_rename_pencil_focus_survives_refresh_and_keyboard_activation(self):
+        self.open()
+        self.page.get_by_role('button',name='Open spaces, tabs and panes').click()
+        control=self.page.locator('[data-rename="space"][data-rename-id="w1"]')
+        control.focus()
+        self.page.evaluate('renderSide()')
+        self.assertTrue(control.evaluate('el => el === document.activeElement'))
+        self.page.once('dialog',lambda dialog:dialog.accept('Keyboard Space'))
+        with self.page.expect_response('**/api/action/rename'):
+            self.page.keyboard.press('Enter')
+        self.page.wait_for_function("document.querySelector('#tree').textContent.includes('Keyboard Space')")
+        self.assertTrue(control.evaluate('el => el === document.activeElement'))
+
+    def test_rename_cancel_failure_and_untrusted_label(self):
+        self.open()
+        self.page.locator('#mobile-more').click()
+        self.page.once('dialog', lambda dialog: dialog.dismiss())
+        self.page.locator('#mobile-rename').click()
+        self.assertEqual(self.httpd.actions,[])
+        self.httpd.fail_action = True
+        self.page.once('dialog',lambda dialog: dialog.accept('not applied'))
+        with self.page.expect_response('**/api/action/rename'):
+            self.page.locator('#mobile-rename').click()
+        self.assertEqual(self.page.locator('#mobile-title').inner_text(),'api-agent')
+        self.httpd.fail_action = False
+        label='<img src=x onerror=window.fixtureInjected=true>'
+        self.page.once('dialog',lambda dialog: dialog.accept(label))
+        with self.page.expect_response('**/api/action/rename'):
+            self.page.locator('#mobile-rename').click()
+        self.page.wait_for_function("document.querySelector('#mobile-title').textContent.startsWith('<img')")
+        self.assertFalse(self.page.evaluate('!!window.fixtureInjected'))
+
+    def test_desktop_rename_control_preserves_selected_target(self):
+        self.context.close()
+        self.context=self.browser.new_context(viewport={'width':1280,'height':900})
+        self.page=self.context.new_page();self.page.on('pageerror',lambda error:self.errors.append(str(error)))
+        self.open('#pane=p2')
+        self.page.once('dialog',lambda dialog:dialog.accept('Desktop Pane'))
+        with self.page.expect_response('**/api/action/rename'):
+            self.page.locator('#dock-rename').click()
+        self.page.wait_for_function("document.querySelector('#dock-title').textContent === 'Desktop Pane'")
+        self.assertEqual(self.httpd.actions[-1][1],{'kind':'pane','id':'p2','label':'Desktop Pane'})
 
     def test_phone_starts_with_focused_pane_without_keyboard_or_mutation(self):
         self.open()
@@ -1372,6 +1860,37 @@ class BrowserDiagnosticsTest(unittest.TestCase):
 
 
 class RealBridgeUITest(unittest.TestCase):
+    def test_native_slash_and_keys_use_real_bridge_order(self):
+        from unittest.mock import patch
+        import test_server
+        bridge = test_server.server
+        test_server.LOG.write_text("")
+        with patch.object(bridge, "HERDR", str(test_server.FAKE)), patch.object(bridge, "TOKEN", "fictional-native-token"):
+            bridge.invalidate()
+            httpd = bridge.make_server(0)
+            threading.Thread(target=httpd.serve_forever, daemon=True).start()
+            try:
+                with sync_playwright() as playwright:
+                    browser = playwright.chromium.launch(channel="chrome", headless=True)
+                    try:
+                        page = browser.new_page(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True)
+                        page.goto(f"http://127.0.0.1:{httpd.server_port}/")
+                        page.locator("#dock.open").wait_for()
+                        page.locator("#dock-input").fill("/")
+                        page.locator("#dock-input").press("ArrowDown")
+                        page.locator("#dock-input").press("Enter")
+                        page.wait_for_function("() => !nativeInput()")
+                        calls = [json.loads(line) for line in test_server.LOG.read_text().splitlines()]
+                        inputs = [call for call in calls if call[:2] in (["pane", "send-text"], ["pane", "send-keys"])]
+                        self.assertEqual(inputs, [["pane", "send-text", "w1:p1", "/"], ["pane", "send-keys", "w1:p1", "down"], ["pane", "send-keys", "w1:p1", "enter"]])
+                        self.assertTrue(any("visible" in call for call in calls))
+                    finally:
+                        browser.close()
+            finally:
+                httpd.shutdown()
+                httpd.server_close()
+                bridge.invalidate()
+
     def test_followup_with_plain_cli_acknowledgement_and_token_rotation(self):
         from unittest.mock import patch
         import test_server

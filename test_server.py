@@ -122,6 +122,15 @@ class ServerTest(unittest.TestCase):
         self.assertIn(["--machine", "worker-a", "api", "snapshot"], self.calls())
         self.assertIn(["api", "snapshot"], self.calls())
 
+    def test_remote_native_viewport_and_rename_keep_machine_routing(self):
+        self.assertEqual(self.req('/api/read?machine=worker-a&pane=w1:p1&source=visible')[0], 200)
+        self.assertIn(['--machine', 'worker-a', 'pane', 'read', 'w1:p1',
+                       '--source', 'visible', '--lines', '120', '--format', 'text'], self.calls())
+        self.assertEqual(self.req('/api/action/rename', {
+            'machine': 'worker-a', 'kind': 'pane', 'id': 'w1:p1', 'label': 'Remote pane'
+        })[0], 200)
+        self.assertIn(['--machine', 'worker-a', 'pane', 'rename', 'w1:p1', 'Remote pane'], self.calls())
+
     def test_local_session_selector_is_never_combined_with_remote_machine(self):
         from unittest.mock import patch
         with patch.object(server, "SESSION", "personal"):
@@ -236,8 +245,23 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("red", json.loads(body)["text"])
         self.assertEqual(self.calls()[-1], ["pane", "read", "w1:p1", "--source", "recent-unwrapped", "--lines", "50", "--format", "ansi"])
+        self.assertEqual(self.req("/api/read?pane=w1:p1&source=visible&lines=80&ansi=1")[0], 200)
+        self.assertEqual(self.calls()[-1], ["pane", "read", "w1:p1", "--source", "visible", "--lines", "80", "--format", "ansi"])
+        self.assertEqual(self.req("/api/read?pane=w1:p1&source=arbitrary")[0], 400)
         self.assertEqual(self.req("/api/read?pane=--help")[0], 400)
         self.assertEqual(self.req("/api/read?pane=w7:p7")[0], 404)
+
+    def test_rename_uses_explicit_native_target(self):
+        for kind, target, native in (("pane", "w1:p1", "pane"), ("tab", "w1:t1", "tab"), ("space", "w1", "workspace")):
+            self.assertEqual(self.req("/api/action/rename", {"kind": kind, "id": target, "label": "New name; literal"})[0], 200)
+            self.assertEqual(self.calls()[-1], [native, "rename", target, "New name; literal"])
+
+    def test_rename_rejects_invalid_labels_and_targets(self):
+        for label in ("", "   ", "-option", "line\nbreak", "tab\tname", "null\0name", "x" * 121, 123):
+            self.assertEqual(self.req("/api/action/rename", {"kind": "pane", "id": "w1:p1", "label": label})[0], 400)
+        for kind, target in (("host", "w1"), ("pane", "--help")):
+            self.assertEqual(self.req("/api/action/rename", {"kind": kind, "id": target, "label": "valid"})[0], 400)
+        self.assertEqual(self.calls(), [])
 
     def test_send_is_literal_and_atomic(self):
         self.assertEqual(self.req("/api/action/send", {"pane": "w1:p1", "text": "--help; rm -rf /"})[0], 200)

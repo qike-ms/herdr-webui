@@ -48,13 +48,21 @@ Expect one focused terminal, **☰** for the space/tab/pane tree, and **Agents**
 agents sorted Working → Blocked → Done → Idle. Tap either header button again
 or its popup's × to dismiss; selection and drafts remain unchanged. Tap a state count to filter;
 tap that same count again to show all. Selecting a pane returns to its output
-without sending input.
+without sending input. Use **✎** beside any space, tab or pane to rename it;
+the selected pane also has **··· → Rename pane**. Expect the new name everywhere
+while selection and drafts stay unchanged; Cancel sends no request.
 Use **··· → Close pane** for confirmed removal, or **Ctrl-C ×2** to send two
 interrupts without removing the terminal. These controls affect the selected pane;
 only test them on a session you intend to interrupt or close.
 **Alt-Enter** sends the WebUI draft followed by Alt-Enter to the selected pane;
 it requires a nonempty browser draft and clears it only after success. If delivery
 fails, inspect the terminal before retrying because text may already be present.
+In a disposable, idle agent pane, type `/`: expect the agent's own command menu
+and highlight. Use ↑/↓, then Tab: expect the completed command plus a space in
+the composer. Add parameters and Enter: expect one submission, not a duplicated
+prefix. Type `/model` and Enter: expect selectable native model rows; tap/click
+one to select it, or use ↑/↓ and Enter with the composer unfocused. Escape cancels native interaction. On uncertain delivery, inspect
+and repair the pane before resetting browser mirroring.
 Check that tapping the composer opens the keyboard while keeping input visible.
 Safari's Share > Add to Home Screen makes a convenient shortcut.
 
