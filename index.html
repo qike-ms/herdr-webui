@@ -52,6 +52,8 @@ aside{display:flex;flex-direction:column;background:var(--bg1);border-right:1px 
 .node .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .node .meta{color:var(--fg3);font-size:11px}
 .node .count{font-size:10.5px;color:var(--fg2);background:var(--bg0);border:1px solid var(--line);border-radius:4px;padding:0 6px}
+.node .rename-node{flex:none;padding:2px 5px;color:var(--fg3);font-size:12px}
+@media(max-width:900px){.node .rename-node{min-width:36px;min-height:36px}}
 .node .chev{width:12px;color:var(--fg3);transition:transform .15s;flex:none;text-align:center}
 .node.open>.chev{transform:rotate(90deg)}
 .node.host{color:var(--fg);font-weight:600}
@@ -320,7 +322,7 @@ select{background:var(--bg0);border:1px solid var(--line2);border-radius:8px;pad
         </div>
       </section>
       <div class="mobile-only mobile-context" id="mobile-context" hidden><span class="kind agent" id="mobile-kind"></span><span class="badge" id="mobile-status"></span><span class="connection" id="mobile-live"></span><button class="mobile-icon" id="mobile-more" aria-label="Pane actions" aria-expanded="false" aria-controls="mobile-actions">···</button></div>
-      <div class="mobile-only mobile-actions" id="mobile-actions" hidden><button class="btn" id="mobile-refresh">Refresh</button><button class="btn" id="mobile-focus">Focus in Herdr</button><button class="btn" id="mobile-interrupt" title="Send Ctrl-C twice to the current pane without closing it">Ctrl-C ×2</button><button class="btn danger" id="mobile-close">Close pane</button><label class="hint"><input type="checkbox" id="mobile-color" checked> Color</label></div>
+      <div class="mobile-only mobile-actions" id="mobile-actions" hidden><button class="btn" id="mobile-refresh">Refresh</button><button class="btn" id="mobile-focus">Focus in Herdr</button><button class="btn" id="mobile-rename">Rename pane</button><button class="btn" id="mobile-interrupt" title="Send Ctrl-C twice to the current pane without closing it">Ctrl-C ×2</button><button class="btn danger" id="mobile-close">Close pane</button><label class="hint"><input type="checkbox" id="mobile-color" checked> Color</label></div>
       <div class="mobile-only mobile-empty" id="mobile-empty" hidden><span id="mobile-empty-text">Connecting to Herdr…</span><button class="btn cy" id="mobile-empty-nav">Choose a pane</button></div>
       <div class="tabbar" id="tabbar" hidden></div>
       <div class="canvas-wrap" id="canvas-wrap" hidden><div class="canvas" id="canvas"></div></div>
@@ -333,6 +335,7 @@ select{background:var(--bg0);border:1px solid var(--line2);border-radius:8px;pad
           <span class="badge" id="dock-badge"></span>
           <span class="sp"></span>
           <label class="hint"><input type="checkbox" id="dock-ansi" checked> color</label>
+          <button class="btn" id="dock-rename">Rename pane</button>
           <button class="btn" id="dock-focus" title="Focus this pane in the Herdr TUI">Focus in Herdr</button>
           <button class="ibtn" id="dock-close" title="Hide (Esc)">✕</button>
         </div>
@@ -760,6 +763,15 @@ function renderConnectionState(){
   $("connection-error-code").hidden=!code;
 }
 
+const renameButton=(kind,id)=>`<button type="button" class="ibtn rename-node" data-rename="${kind}" data-rename-id="${esc(id)}" title="Rename ${kind}" aria-label="Rename ${kind}">✎</button>`;
+async function renameEntity(kind,id){
+  const entity=kind==="pane"?getPane(id):kind==="tab"?getTab(id):getWs(id);if(!entity)return;
+  const name=kind==="pane"?paneName(entity):kind==="tab"?tabName(entity):wsName(entity);
+  const label=prompt(`Rename ${kind}`,entity.label||name);if(label===null||label===entity.label)return;
+  if(!label.trim()||label.length>120||label.startsWith("-")||/[\x00-\x1f\x7f]/.test(label)){toast("Use a nonempty name of up to 120 characters, without control characters or a leading dash.","err");return;}
+  try{await act("rename",{kind,id,label});toast(`${kind} renamed`);await refreshTree();}
+  catch(e){toast(e.message,"err");}
+}
 function renderSide(){
   const t=S.tree,el=$("tree");
   const focused=phone.matches&&el.contains(document.activeElement)?document.activeElement:null;
@@ -779,16 +791,16 @@ function renderSide(){
   for(const w of [...t.workspaces].sort((a,b)=>a.number-b.number)){
     if(!wsMatch(w))continue;
     const open=S.open.has(w.workspace_id)||!!S.filter;
-    h+=`<div class="node ${open?"open":""} ${w.workspace_id===S.ws?"active":""}" data-ws="${esc(w.workspace_id)}"><span class="chev" data-toggle="${esc(w.workspace_id)}">›</span>${ICON.space}<span class="name">${esc(wsName(w))}</span><span class="dot s-${st(w.agent_status)}" title="${esc(w.agent_status)}"></span><span class="count">${w.pane_count}</span></div>`;
+    h+=`<div class="node ${open?"open":""} ${w.workspace_id===S.ws?"active":""}" data-ws="${esc(w.workspace_id)}"><span class="chev" data-toggle="${esc(w.workspace_id)}">›</span>${ICON.space}<span class="name">${esc(wsName(w))}</span><span class="dot s-${st(w.agent_status)}" title="${esc(w.agent_status)}"></span><span class="count">${w.pane_count}</span>${renameButton("space",w.workspace_id)}</div>`;
     if(!open)continue;
     h+=`<div class="kids">`;
     for(const tb of tabsOf(w.workspace_id)){
       if(!tabMatch(tb))continue;
-      h+=`<div class="node ${tb.tab_id===S.tab?"active":""}" data-tab="${esc(tb.tab_id)}" data-tabws="${esc(w.workspace_id)}"><span class="chev"></span>${ICON.tab}<span class="name">${esc(tabName(tb))}</span><span class="dot s-${st(tb.agent_status)}"></span><span class="count">${tb.pane_count}</span></div>`;
+      h+=`<div class="node ${tb.tab_id===S.tab?"active":""}" data-tab="${esc(tb.tab_id)}" data-tabws="${esc(w.workspace_id)}"><span class="chev"></span>${ICON.tab}<span class="name">${esc(tabName(tb))}</span><span class="dot s-${st(tb.agent_status)}"></span><span class="count">${tb.pane_count}</span>${renameButton("tab",tb.tab_id)}</div>`;
       h+=`<div class="kids">`;
       for(const p of panesOf(tb.tab_id)){
         if(!paneMatch(p)&&S.filter&&!matches(tabName(tb),wsName(w)))continue;
-        h+=`<div class="node ${p.pane_id===S.pane?"active":""}" data-pane="${esc(p.pane_id)}" title="${esc(p.cwd||"")}">${ICON.pane}<span class="name">${esc(paneName(p))}</span>${p.agent?`<span class="meta">${esc(p.agent)}</span>`:""}<span class="dot s-${st(p.agent_status)}"></span></div>`;
+        h+=`<div class="node ${p.pane_id===S.pane?"active":""}" data-pane="${esc(p.pane_id)}" title="${esc(p.cwd||"")}">${ICON.pane}<span class="name">${esc(paneName(p))}</span>${p.agent?`<span class="meta">${esc(p.agent)}</span>`:""}<span class="dot s-${st(p.agent_status)}"></span>${renameButton("pane",p.pane_id)}</div>`;
       }
       h+=`</div>`;
     }
@@ -998,11 +1010,14 @@ $("mobile-more").onclick=()=>{const el=$("mobile-actions");el.hidden=!el.hidden;
 $("mobile-header-more").onclick=()=>$("mobile-more").click();
 $("mobile-refresh").onclick=()=>refreshTree(true).then(pollDock);
 $("mobile-focus").onclick=()=>$("dock-focus").click();
+$("mobile-rename").onclick=()=>renameEntity("pane",S.pane);
+$("dock-rename").onclick=()=>renameEntity("pane",S.pane);
 $("mobile-close").onclick=()=>closePane(S.pane);
 $("mobile-interrupt").onclick=interruptTwice;
 $("mobile-color").onchange=()=>{$("dock-ansi").checked=$("mobile-color").checked;pollDock();};
 $("tree").addEventListener("keydown",e=>{if(phone.matches&&(e.key==="Enter"||e.key===" ")&&e.target.matches(".node,[data-toggle]")){e.preventDefault();e.target.click();}});
 $("tree").addEventListener("click",e=>{
+  const rename=e.target.closest('[data-rename]');if(rename){renameEntity(rename.dataset.rename,rename.dataset.renameId);return;}
   const tog=e.target.closest("[data-toggle]");if(tog){const id=tog.dataset.toggle;S.open.has(id)?S.open.delete(id):S.open.add(id);renderSide();return;}
   const n=e.target.closest(".node");if(!n)return;
   if(n.dataset.pane)openDock(n.dataset.pane);else if(n.dataset.tab)selectTab(n.dataset.tab);else if(n.dataset.ws)selectWs(n.dataset.ws);

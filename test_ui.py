@@ -136,6 +136,9 @@ class FixtureHandler(BaseHTTPRequestHandler):
                     self.server.native_text[pane] = ""
                 elif key == "esc":
                     self.server.model_panes.discard(pane)
+        if self.path == "/api/action/rename":
+            collection, key = {"pane": ("panes", "pane_id"), "tab": ("tabs", "tab_id"), "space": ("workspaces", "workspace_id")}[body["kind"]]
+            next(item for item in self.server.tree[collection] if item[key] == body["id"])["label"] = body["label"]
         if self.path == "/api/action/close":
             self.server.tree["panes"] = [p for p in self.server.tree["panes"] if p["pane_id"] != body["pane"]]
         self.reply({"ok": True, "result": {"ok": True}})
@@ -565,6 +568,52 @@ class PhoneUITest(unittest.TestCase):
         with self.page.expect_response("**/api/action/send"):
             self.page.locator("#dock-input").press("Enter")
         self.assertEqual(self.httpd.actions[-1][1], {"pane": "p3", "text": "/usr/bin/example", "enter": True})
+
+    def test_navigation_renames_all_entity_types_without_selection_or_draft_changes(self):
+        self.open()
+        self.page.locator('#dock-input').fill('keep draft')
+        self.page.get_by_role('button', name='Open spaces, tabs and panes').click()
+        for kind, target, label in (('space','w1','Renamed Space'),('tab','t1','Renamed Tab'),('pane','p2','Renamed Pane')):
+            self.page.once('dialog', lambda dialog, label=label: dialog.accept(label))
+            with self.page.expect_response('**/api/action/rename'):
+                self.page.locator(f'[data-rename="{kind}"][data-rename-id="{target}"]').click()
+            self.page.wait_for_function(f"document.querySelector('#tree').textContent.includes('{label}')")
+            self.assertEqual(self.httpd.actions[-1][1], {'kind':kind,'id':target,'label':label})
+        self.page.locator('#mobile-nav-close').click()
+        self.assertEqual(self.page.locator('#mobile-title').inner_text(),'Renamed Pane')
+        self.assertEqual(self.page.locator('#mobile-path').inner_text(),'Renamed Space / Renamed Tab')
+        self.assertEqual(self.page.locator('#dock-input').input_value(),'keep draft')
+        self.assertEqual(self.page.evaluate('S.pane'),'p2')
+
+    def test_rename_cancel_failure_and_untrusted_label(self):
+        self.open()
+        self.page.locator('#mobile-more').click()
+        self.page.once('dialog', lambda dialog: dialog.dismiss())
+        self.page.locator('#mobile-rename').click()
+        self.assertEqual(self.httpd.actions,[])
+        self.httpd.fail_action = True
+        self.page.once('dialog',lambda dialog: dialog.accept('not applied'))
+        with self.page.expect_response('**/api/action/rename'):
+            self.page.locator('#mobile-rename').click()
+        self.assertEqual(self.page.locator('#mobile-title').inner_text(),'api-agent')
+        self.httpd.fail_action = False
+        label='<img src=x onerror=window.fixtureInjected=true>'
+        self.page.once('dialog',lambda dialog: dialog.accept(label))
+        with self.page.expect_response('**/api/action/rename'):
+            self.page.locator('#mobile-rename').click()
+        self.page.wait_for_function("document.querySelector('#mobile-title').textContent.startsWith('<img')")
+        self.assertFalse(self.page.evaluate('!!window.fixtureInjected'))
+
+    def test_desktop_rename_control_preserves_selected_target(self):
+        self.context.close()
+        self.context=self.browser.new_context(viewport={'width':1280,'height':900})
+        self.page=self.context.new_page();self.page.on('pageerror',lambda error:self.errors.append(str(error)))
+        self.open('#pane=p2')
+        self.page.once('dialog',lambda dialog:dialog.accept('Desktop Pane'))
+        with self.page.expect_response('**/api/action/rename'):
+            self.page.locator('#dock-rename').click()
+        self.page.wait_for_function("document.querySelector('#dock-title').textContent === 'Desktop Pane'")
+        self.assertEqual(self.httpd.actions[-1][1],{'kind':'pane','id':'p2','label':'Desktop Pane'})
 
     def test_phone_starts_with_focused_pane_without_keyboard_or_mutation(self):
         self.open()

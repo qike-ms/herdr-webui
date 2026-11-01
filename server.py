@@ -185,6 +185,18 @@ def act_split(b):
     return herdr(["pane", "split", need_id(b, "pane"), "--direction", direction, "--no-focus"])
 
 
+def act_rename(b):
+    kind = b.get("kind")
+    if kind not in ("pane", "tab", "space"):
+        raise BridgeError("invalid rename kind", 400)
+    target = need_id(b, "id")
+    label = b.get("label")
+    if (not isinstance(label, str) or not label.strip() or len(label) > 120
+            or label.startswith("-") or any(ord(c) < 32 or ord(c) == 127 for c in label)):
+        raise BridgeError("invalid label", 400)
+    return herdr(["workspace" if kind == "space" else kind, "rename", target, label])
+
+
 def act_close(b):
     return herdr(["pane", "close", need_id(b, "pane")])
 
@@ -211,7 +223,7 @@ def act_spawn(b):
 
 
 ACTIONS = {"send": act_send, "keys": act_keys, "followup": act_followup, "prompt": act_prompt, "focus": act_focus,
-           "split": act_split, "close": act_close, "spawn": act_spawn}
+           "split": act_split, "close": act_close, "spawn": act_spawn, "rename": act_rename}
 
 
 # -------------------------------------------------------------------- server

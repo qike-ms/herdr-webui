@@ -48,7 +48,9 @@ Expect one focused terminal, **☰** for the space/tab/pane tree, and **Agents**
 agents sorted Working → Blocked → Done → Idle. Tap either header button again
 or its popup's × to dismiss; selection and drafts remain unchanged. Tap a state count to filter;
 tap that same count again to show all. Selecting a pane returns to its output
-without sending input.
+without sending input. Use **✎** beside any space, tab or pane to rename it;
+the selected pane also has **··· → Rename pane**. Expect the new name everywhere
+while selection and drafts stay unchanged; Cancel sends no request.
 Use **··· → Close pane** for confirmed removal, or **Ctrl-C ×2** to send two
 interrupts without removing the terminal. These controls affect the selected pane;
 only test them on a session you intend to interrupt or close.

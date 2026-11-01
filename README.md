@@ -224,6 +224,15 @@ is no live model-switch endpoint in this bridge. The proposed production
 companion must run separately so it remains reachable when the bridge fails.
 See [mockup notes](docs/mockups/README.md).
 
+## Rename spaces, tabs and panes
+
+Use the **✎ Rename** button beside any space, tab or pane in Workspace navigation
+(on desktop or phone). The selected pane also has **Rename pane** in its inspector
+header or phone **···** actions. Edit the pre-filled name and confirm; Cancel sends
+nothing. Names may contain up to 120 characters, but must be nonempty and contain
+no control characters or leading dash. Renaming updates displayed names without
+moving focus, interrupting agents, or changing message drafts.
+
 ## Native slash commands and models
 
 In an agent pane, typing `/` immediately types it into that pane **without Enter**.
@@ -282,6 +291,7 @@ not a password or a tailnet firewall rule.
 | POST | `/api/action/focus` `{pane,tab,agent}` | `agent focus` / `tab focus` |
 | POST | `/api/action/split` `{pane,direction}` | `pane split --no-focus` |
 | POST | `/api/action/close` `{pane}` | `pane close` |
+| POST | `/api/action/rename` `{kind,id,label}` | `pane` / `tab` / `workspace rename` (`kind=space` for workspace) |
 | POST | `/api/action/spawn` `{workspace?,space_label?,tab_label?,kind?,name?}` | `workspace create` / `tab create` [+ `agent start`] |
 
 ## Test
