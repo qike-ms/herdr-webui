@@ -465,6 +465,32 @@ class PhoneUITest(unittest.TestCase):
         self.assertEqual(self.httpd.actions[-1][0], '/api/action/prompt')
         self.assertEqual([a[1]['text'] for a in self.httpd.actions if a[0].endswith('/send')], ['/',' '])
 
+    def test_slash_initialization_waits_for_ordinary_submit(self):
+        self.open()
+        self.httpd.delay_action = True
+        self.page.locator('#dock-input').fill('ordinary')
+        self.page.locator('#dock-input').press('Enter')
+        self.assertTrue(self.httpd.action_started.wait(2))
+        self.page.locator('#dock-input').fill('/')
+        self.assertEqual(self.httpd.actions, [])
+        self.httpd.delay_action = False;self.httpd.action_release.set()
+        self.page.wait_for_function('nativeInput()?.pending === 0')
+        self.assertEqual([a[0].split('/')[-1] for a in self.httpd.actions], ['prompt','send'])
+        self.assertEqual(self.httpd.native_text['p2'], '/')
+
+    def test_keypad_enter_joins_reacquired_slash_owner(self):
+        self.open()
+        self.page.locator('#dock-input').fill('/')
+        self.page.wait_for_function('nativeInput()?.pending === 0')
+        self.httpd.delay_action = True
+        self.page.locator('#dock-input').fill('')
+        self.assertTrue(self.httpd.action_started.wait(2))
+        self.page.locator('#dock-input').fill('/model')
+        self.page.locator('[data-key="enter"]').click()
+        self.httpd.delay_action = False;self.httpd.action_release.set()
+        self.page.wait_for_function("nativeInput()?.phase === 'model' && nativeInput().pending === 0")
+        self.assertEqual([(a[0].split('/')[-1],a[1].get('text',a[1].get('keys'))) for a in self.httpd.actions], [('send','/'),('keys',['backspace']),('send','/model'),('keys',['enter'])])
+
     def test_native_parameter_alt_enter_keyboard_and_button(self):
         self.open()
         for keyboard in (True, False):
