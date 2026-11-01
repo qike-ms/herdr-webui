@@ -20,6 +20,8 @@ ERROR_CODES = {
     "request body timed out": "body_timeout", "pane is not in the current snapshot": "pane_not_found",
     "invalid keys": "keys_invalid", "invalid direction": "direction_invalid",
     "invalid agent kind": "agent_kind_invalid", "invalid agent name": "agent_name_invalid",
+    "invalid machine": "machine_invalid", "machine is not registered": "machine_not_found",
+    "machine is disabled": "machine_disabled",
     **{f"invalid {key}": f"{key}_invalid" for key in ("pane", "tab", "workspace", "text", "space_label", "tab_label")},
 }
 ERROR_MESSAGES = {code: message for message, code in ERROR_CODES.items()}
@@ -28,7 +30,7 @@ ERROR_MESSAGES.update({"herdr_not_found": "herdr executable not found", "herdr_t
                        "invalid_json": "invalid JSON request body", "internal_error": "internal server error"})
 BROWSER_KINDS = frozenset({"network_error", "invalid_json", "invalid_response", "csrf_refresh_failed",
                            "javascript_error", "unhandled_rejection", "resource_error", "http_error", "ui_error"})
-ROUTES = frozenset({"/", "/api/tree", "/api/read", "/api/client-error", "/errors.js", "/mockups/sre-landing", "/mockups/model-switch",
+ROUTES = frozenset({"/", "/api/machines", "/api/tree", "/api/read", "/api/client-error", "/errors.js", "/mockups/sre-landing", "/mockups/model-switch",
                     *(f"/api/action/{action}" for action in ("send", "keys", "followup", "prompt", "focus", "split", "close", "spawn"))})
 
 

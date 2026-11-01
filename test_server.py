@@ -21,17 +21,30 @@ FAKE.write_text(f"""#!{sys.executable}
 import json, sys
 args = sys.argv[1:]
 open({str(LOG)!r}, "a").write(json.dumps(args) + "\\n")
-if args[:2] == ["api", "snapshot"]:
+machine = "local"
+if args[:1] == ["--session"]:
+    args = args[2:]
+elif args[:1] == ["--machine"]:
+    machine, args = args[1], args[2:]
+if machine == "offline":
+    print("fixture remote unavailable", file=sys.stderr); sys.exit(1)
+if args[:2] == ["machine", "list"]:
+    print(json.dumps([
+        {{"id": "worker-a", "label": "Worker A", "enabled": True}},
+        {{"id": "offline", "label": "Offline worker", "enabled": True}},
+        {{"id": "disabled", "label": "Disabled worker", "enabled": False}}
+    ]))
+elif args[:2] == ["api", "snapshot"]:
     print(json.dumps({{"result": {{"snapshot": {{
         "version": "9.9", "protocol": 22, "focused_workspace_id": "w1", "focused_tab_id": "w1:t1", "focused_pane_id": "w1:p1",
-        "workspaces": [{{"workspace_id": "w1", "label": "space", "number": 1, "active_tab_id": "w1:t1", "pane_count": 1, "tab_count": 1}}],
+        "workspaces": [{{"workspace_id": "w1", "label": "space" if machine == "local" else "remote space", "number": 1, "active_tab_id": "w1:t1", "pane_count": 1, "tab_count": 1}}],
         "tabs": [{{"tab_id": "w1:t1", "workspace_id": "w1", "label": "tab", "number": 1, "pane_count": 1}}],
         "panes": [{{"pane_id": "w1:p1", "tab_id": "w1:t1", "workspace_id": "w1", "agent": "pi", "agent_status": "idle",
                     "agent_session": {{"value": "/secret/session.jsonl"}}, "cwd": "/tmp"}}],
         "agents": [], "layouts": [{{"tab_id": "w1:t1", "area": {{"x": 0, "y": 0, "width": 10, "height": 10}},
                      "panes": [{{"pane_id": "w1:p1", "rect": {{"x": 0, "y": 0, "width": 10, "height": 10}}}}]}}]}}}}}}))
 elif args[:2] == ["pane", "read"]:
-    print("hello \\x1b[31mred\\x1b[0m")
+    print(("REMOTE " if machine != "local" else "") + "hello \\x1b[31mred\\x1b[0m")
 elif args[:2] == ["pane", "send-text"] and args[3] == "fixture-type-failure":
     print("fixture type failed", file=sys.stderr); sys.exit(1)
 elif args[:2] == ["pane", "send-keys"] and args[2] == "w8:p8":
@@ -89,6 +102,44 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn(server.TOKEN.encode(), body)
         self.assertNotIn(b"__CSRF_TOKEN__", body)
+
+    def test_machine_catalog_exposes_only_selection_fields(self):
+        status, body = self.req("/api/machines")
+        self.assertEqual(status, 200)
+        items = json.loads(body)["machines"]
+        self.assertEqual(items[0]["id"], "local")
+        self.assertEqual(items[1], {"id": "worker-a", "label": "Worker A", "local": False, "enabled": True})
+        self.assertTrue(all(set(m) == {"id", "label", "local", "enabled"} for m in items))
+
+    def test_remote_and_local_snapshots_do_not_share_cache_or_pane_output(self):
+        remote = json.loads(self.req("/api/tree?machine=worker-a")[1])
+        local = json.loads(self.req("/api/tree")[1])
+        self.assertEqual(remote["machine"], "worker-a")
+        self.assertEqual(remote["workspaces"][0]["label"], "remote space")
+        self.assertEqual(local["workspaces"][0]["label"], "space")
+        text = json.loads(self.req("/api/read?machine=worker-a&pane=w1:p1")[1])["text"]
+        self.assertIn("REMOTE hello", text)
+        self.assertIn(["--machine", "worker-a", "api", "snapshot"], self.calls())
+        self.assertIn(["api", "snapshot"], self.calls())
+
+    def test_local_session_selector_is_never_combined_with_remote_machine(self):
+        from unittest.mock import patch
+        with patch.object(server, "SESSION", "personal"):
+            self.assertEqual(self.req("/api/tree")[0], 200)
+            self.assertEqual(self.req("/api/action/send", {"machine": "worker-a", "pane": "w1:p1", "text": "fictional"})[0], 200)
+        self.assertIn(["--session", "personal", "api", "snapshot"], self.calls())
+        self.assertIn(["--machine", "worker-a", "pane", "run", "w1:p1", "fictional"], self.calls())
+        self.assertFalse(any("--session" in call and "--machine" in call for call in self.calls()))
+
+    def test_unavailable_remote_never_falls_back_to_local(self):
+        self.assertEqual(self.req("/api/tree?machine=offline")[0], 502)
+        self.assertEqual(self.req("/api/action/send", {"machine": "offline", "pane": "w1:p1", "text": "fictional"})[0], 502)
+        self.assertFalse(any(call[:2] == ["api", "snapshot"] or call[:2] == ["pane", "run"] for call in self.calls()))
+
+    def test_unknown_disabled_and_invalid_targets_cannot_mutate(self):
+        for target, status in (("unknown", 404), ("disabled", 503), ("worker-a\n", 400), ([], 400)):
+            self.assertEqual(self.req("/api/action/close", {"machine": target, "pane": "w1:p1"})[0], status)
+        self.assertFalse(any("close" in call for call in self.calls()))
 
     def test_identifiers_and_keys_reject_trailing_newlines(self):
         self.assertEqual(self.req("/api/action/close", {"pane": "w1:p1\n"})[0], 400)

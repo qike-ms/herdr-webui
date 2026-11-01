@@ -25,6 +25,7 @@ from error_log import BROWSER_KINDS, ERROR_CODES, ERROR_MESSAGES, ErrorLog, defa
 
 HERE = Path(__file__).resolve().parent
 HERDR = os.environ.get("HERDR_BIN", "herdr")
+SESSION = os.environ.get("HERDR_SESSION")
 TIMEOUT = float(os.environ.get("HERDR_TIMEOUT", "20"))
 TOKEN = secrets.token_urlsafe(32)
 
@@ -42,9 +43,10 @@ class BridgeError(Exception):
         self.code = code or ERROR_CODES.get(message, "herdr_error" if status >= 500 else "validation_error")
 
 
-def herdr(args: list[str], *, parse: bool = True):
+def herdr(args: list[str], *, parse: bool = True, machine: str = "local"):
+    selector = ["--machine", machine] if machine != "local" else (["--session", SESSION] if SESSION else [])
     try:
-        done = subprocess.run([HERDR, *args], capture_output=True, text=True, timeout=TIMEOUT, check=False)
+        done = subprocess.run([HERDR, *selector, *args], capture_output=True, text=True, timeout=TIMEOUT, check=False)
     except FileNotFoundError:
         raise BridgeError(f"herdr not found: {HERDR}", code="herdr_not_found")
     except subprocess.TimeoutExpired:
@@ -62,19 +64,20 @@ def herdr(args: list[str], *, parse: bool = True):
 
 
 # ---------------------------------------------------------------------- tree
-_cache: dict = {"at": 0.0, "tree": None}
+_cache: dict = {}
 _lock = threading.Lock()
 PANE_KEYS = ("pane_id", "tab_id", "workspace_id", "label", "cwd", "foreground_cwd", "focused",
              "agent_status", "terminal_title_stripped", "revision")
 
 
-def snapshot(max_age: float = 1.0) -> dict:
+def snapshot(max_age: float = 1.0, *, machine: str = "local", label: str | None = None) -> dict:
     """Host > Space(workspace) > Tab > Pane, normalized from `herdr api snapshot`."""
     with _lock:
-        if _cache["tree"] and time.time() - _cache["at"] < max_age:
-            return _cache["tree"]
+        cached = _cache.get(machine)
+        if cached and time.time() - cached["at"] < max_age:
+            return cached["tree"]
     started = time.time()
-    raw = herdr(["api", "snapshot"])
+    raw = herdr(["api", "snapshot"], machine=machine)
     snap = raw.get("snapshot", raw) if isinstance(raw, dict) else {}
     agents = {a.get("pane_id"): a for a in snap.get("agents", []) if isinstance(a, dict)}
     panes = []
@@ -85,7 +88,8 @@ def snapshot(max_age: float = 1.0) -> dict:
             "has_session": bool(p.get("agent_session") or a.get("agent_session")),
         })
     tree = {
-        "host": socket.gethostname().split(".")[0],
+        "host": label or socket.gethostname().split(".")[0],
+        "machine": machine,
         "version": snap.get("version"),
         "protocol": snap.get("protocol"),
         "focused": {k: snap.get(f"focused_{k}_id") for k in ("workspace", "tab", "pane")},
@@ -97,13 +101,49 @@ def snapshot(max_age: float = 1.0) -> dict:
         "latency_ms": round((time.time() - started) * 1000),
     }
     with _lock:
-        _cache.update(at=time.time(), tree=tree)
+        _cache[machine] = {"at": time.time(), "tree": tree}
     return tree
 
 
-def invalidate() -> None:
+def invalidate(machine: str | None = None) -> None:
     with _lock:
-        _cache["tree"] = None
+        if machine is None:
+            _cache.clear()
+        else:
+            _cache.pop(machine, None)
+
+
+def local_machine() -> dict:
+    return {"id": "local", "label": socket.gethostname().split(".")[0], "local": True, "enabled": True}
+
+
+def machines() -> dict:
+    profiles = herdr(["machine", "list", "--json"])
+    if not isinstance(profiles, list) or any(
+        not isinstance(p, dict) or not isinstance(p.get("id"), str) or not ID_RE.fullmatch(p["id"])
+        or not isinstance(p.get("label"), str) or type(p.get("enabled")) is not bool for p in profiles
+    ):
+        raise BridgeError("herdr returned invalid machine catalog", code="herdr_invalid_json")
+    return {"machines": [local_machine(), *[
+        {"id": p["id"], "label": p["label"], "local": False, "enabled": p["enabled"]} for p in profiles
+    ]]}
+
+
+def need_machine(value) -> dict:
+    if value is None or value == "local":
+        return local_machine()
+    if not isinstance(value, str) or not ID_RE.fullmatch(value):
+        raise BridgeError("invalid machine", 400)
+    target = next((p for p in machines()["machines"] if p["id"] == value), None)
+    if target is None:
+        raise BridgeError("machine is not registered", 404)
+    if not target["enabled"]:
+        raise BridgeError("machine is disabled", 503)
+    return target
+
+
+def action_herdr(body, args, *, parse=True):
+    return herdr(args, parse=parse, machine=body.get("machine", "local"))
 
 
 # ------------------------------------------------------------------ validate
@@ -137,11 +177,11 @@ def act_send(b):
     text = need_text(b, "text", allow_empty=True)
     enter = bool(b.get("enter", True))
     if text and enter:
-        herdr(["pane", "run", pane, text], parse=False)  # atomic text + Enter (no race with blocked prompts)
+        action_herdr(b, ["pane", "run", pane, text], parse=False)  # atomic text + Enter (no race with blocked prompts)
     elif text:
-        herdr(["pane", "send-text", pane, text], parse=False)
+        action_herdr(b, ["pane", "send-text", pane, text], parse=False)
     elif enter:
-        herdr(["pane", "send-keys", pane, "enter"], parse=False)
+        action_herdr(b, ["pane", "send-keys", pane, "enter"], parse=False)
     return {"ok": True}
 
 
@@ -150,7 +190,7 @@ def act_keys(b):
     keys = b.get("keys")
     if not isinstance(keys, list) or not 0 < len(keys) <= 16 or not all(isinstance(k, str) and KEY_RE.fullmatch(k) for k in keys):
         raise BridgeError("invalid keys", 400)
-    herdr(["pane", "send-keys", pane, *keys], parse=False)
+    action_herdr(b, ["pane", "send-keys", pane, *keys], parse=False)
     return {"ok": True}
 
 
@@ -159,8 +199,8 @@ def act_followup(b):
     pane = need_id(b, "pane")
     text = need_text(b, "text")
     try:
-        herdr(["pane", "send-text", pane, text], parse=False)
-        herdr(["pane", "send-keys", pane, "alt+enter"], parse=False)
+        action_herdr(b, ["pane", "send-text", pane, text], parse=False)
+        action_herdr(b, ["pane", "send-keys", pane, "alt+enter"], parse=False)
     except BridgeError as error:
         raise BridgeError("Follow-up delivery failed. Text may already be in the terminal; inspect it before retrying.", error.status, error.code) from error
     return {"ok": True}
@@ -168,36 +208,36 @@ def act_followup(b):
 
 def act_prompt(b):
     """Agent-aware submit (rejects when the agent is blocked)."""
-    return herdr(["agent", "prompt", need_id(b, "pane"), need_text(b, "text")])
+    return action_herdr(b, ["agent", "prompt", need_id(b, "pane"), need_text(b, "text")])
 
 
 def act_focus(b):
     """Focus the pane in the Herdr TUI: agent panes directly, others via their tab."""
     if b.get("agent"):
-        return herdr(["agent", "focus", need_id(b, "pane")])
-    return herdr(["tab", "focus", need_id(b, "tab")])
+        return action_herdr(b, ["agent", "focus", need_id(b, "pane")])
+    return action_herdr(b, ["tab", "focus", need_id(b, "tab")])
 
 
 def act_split(b):
     direction = b.get("direction", "right")
     if direction not in ("right", "down"):
         raise BridgeError("invalid direction", 400)
-    return herdr(["pane", "split", need_id(b, "pane"), "--direction", direction, "--no-focus"])
+    return action_herdr(b, ["pane", "split", need_id(b, "pane"), "--direction", direction, "--no-focus"])
 
 
 def act_close(b):
-    return herdr(["pane", "close", need_id(b, "pane")])
+    return action_herdr(b, ["pane", "close", need_id(b, "pane")])
 
 
 def act_spawn(b):
     """New space (workspace) or new tab in an existing space; optionally start an agent in its root pane."""
     if b.get("workspace"):
-        res = herdr(["tab", "create", "--workspace", need_id(b, "workspace"), *opt_label(b, "tab_label"), "--no-focus"])
+        res = action_herdr(b, ["tab", "create", "--workspace", need_id(b, "workspace"), *opt_label(b, "tab_label"), "--no-focus"])
     else:
-        res = herdr(["workspace", "create", *opt_label(b, "space_label"), "--no-focus"])
+        res = action_herdr(b, ["workspace", "create", *opt_label(b, "space_label"), "--no-focus"])
     pane = (res.get("root_pane") or {}).get("pane_id")
     if not b.get("workspace") and b.get("tab_label") and res.get("tab", {}).get("tab_id"):
-        herdr(["tab", "rename", res["tab"]["tab_id"], *opt_label(b, "tab_label")[1:]])
+        action_herdr(b, ["tab", "rename", res["tab"]["tab_id"], *opt_label(b, "tab_label")[1:]])
     kind = b.get("kind")
     if kind:
         if kind not in KINDS or not pane:
@@ -205,7 +245,7 @@ def act_spawn(b):
         name = str(b.get("name") or kind)
         if not ID_RE.fullmatch(name):
             raise BridgeError("invalid agent name", 400)
-        herdr(["agent", "start", name, "--kind", kind, "--pane", pane, "--timeout", "30000"])
+        action_herdr(b, ["agent", "start", name, "--kind", kind, "--pane", pane, "--timeout", "30000"])
     return {"pane_id": pane, "tab_id": (res.get("tab") or {}).get("tab_id"),
             "workspace_id": (res.get("root_pane") or {}).get("workspace_id")}
 
@@ -347,18 +387,22 @@ class Handler(BaseHTTPRequestHandler):
             if url.path in {"/mockups/sre-landing", "/mockups/model-switch"}:
                 mockup = "sre-landing.html" if url.path == "/mockups/sre-landing" else "model-switch.html"
                 return self._send(200, (HERE / "docs/mockups" / mockup).read_bytes(), "text/html; charset=utf-8")
+            if url.path == "/api/machines":
+                return self._json(200, machines())
             if url.path == "/api/tree":
-                return self._json(200, snapshot())
+                target = need_machine(q.get("machine"))
+                return self._json(200, snapshot(machine=target["id"], label=target["label"]))
             if url.path == "/api/read":
                 pane = need_id(q, "pane")
-                if not any(p["pane_id"] == pane for p in snapshot(max_age=5)["panes"]):
+                target = need_machine(q.get("machine"))
+                if not any(p["pane_id"] == pane for p in snapshot(max_age=5, machine=target["id"], label=target["label"])["panes"]):
                     raise BridgeError("pane is not in the current snapshot", 404)
                 try:
                     lines = max(5, min(int(q.get("lines", "120")), 2000))
                 except ValueError:
                     raise BridgeError("bad request", 400) from None
                 fmt = "ansi" if q.get("ansi") == "1" else "text"
-                text = herdr(["pane", "read", pane, "--source", "recent-unwrapped", "--lines", str(lines), "--format", fmt], parse=False)
+                text = herdr(["pane", "read", pane, "--source", "recent-unwrapped", "--lines", str(lines), "--format", fmt], parse=False, machine=target["id"])
                 return self._json(200, {"pane": pane, "text": text[-MAX_READ:]})
             return self._json(404, {"error": "not found"})
         except BridgeError as e:
@@ -407,8 +451,9 @@ class Handler(BaseHTTPRequestHandler):
                             status=status if type(status) is int and 100 <= status <= 599 else None,
                             related_request_id=related if isinstance(related, str) and re.fullmatch(r"[a-f0-9]{16}", related) else None)
                 return self._json(200, {"ok": True})
+            body["machine"] = need_machine(body.get("machine"))["id"]
             result = action(body)
-            invalidate()
+            invalidate(body["machine"])
             return self._json(200, {"ok": True, "result": result})
         except BridgeError as e:
             self.error_code = e.code

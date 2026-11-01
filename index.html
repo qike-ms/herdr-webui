@@ -118,10 +118,8 @@ main{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(
 .btn.danger{color:var(--red);border-color:#5a2730;background:#24121a}
 .btn:disabled,.hbtn:disabled,.mobile-icon:disabled,.mobile-agents-btn:disabled{opacity:.45;cursor:not-allowed}
 /* dock */
-.dock{flex:none;height:44vh;min-height:180px;display:none;flex-direction:column;border-top:1px solid var(--line2);background:var(--bg1)}
+.dock{flex:1;min-height:0;display:none;flex-direction:column;border-top:1px solid var(--line2);background:var(--bg1)}
 .dock.open{display:flex}
-.dock-resize{height:5px;cursor:ns-resize;background:transparent;margin-top:-3px}
-.dock-resize:hover{background:var(--cyan)}
 .dh{display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--line);font-family:var(--mono)}
 .dh .title{font-weight:700;color:var(--fg)}
 .dh .pid{color:var(--fg3);font-size:11px}
@@ -198,7 +196,7 @@ select{background:var(--bg0);border:1px solid var(--line2);border-radius:8px;pad
   .mobile-actions .btn{min-height:40px}
   .dock,.dock.open{flex:1;height:auto!important;min-height:0;border-top:0}
   .dock:not(.open){display:none}
-  .dock-resize,.dock .dh{display:none}
+  .dock .dh{display:none}
   .term{padding:16px 14px;font:12px/1.65 var(--mono);overscroll-behavior:contain}
   .dock .keys{gap:6px;padding:8px 12px;flex-wrap:nowrap;overflow-x:auto;order:3;flex:none;padding-bottom:max(8px,env(safe-area-inset-bottom))}
   .keys .hint{display:none}
@@ -263,6 +261,15 @@ select{background:var(--bg0);border:1px solid var(--line2);border-radius:8px;pad
   .toast{max-width:none;overflow-wrap:anywhere}
 }
 </style>
+<style>
+.machine-picker{display:flex;align-items:center;gap:10px;padding:10px 16px;color:var(--fg3);font:12px var(--mono)}
+.machine-picker select{min-width:0;flex:1;background:var(--bg1);color:var(--fg);border:1px solid var(--line);padding:8px;border-radius:5px}
+#machine-error{padding:0 16px 8px;color:var(--red);font-size:12px}
+.short-phone .side-h{justify-content:flex-end}
+.short-phone .side-h h3,.short-phone #active-pill{display:none}
+.short-phone .machine-picker{position:absolute;top:0;left:12px;right:104px;height:44px;padding:0}
+.short-phone .machine-picker select{height:44px;padding:4px;font-size:16px}
+</style>
 </head>
 <body>
 <div class="app">
@@ -284,6 +291,8 @@ select{background:var(--bg0);border:1px solid var(--line2);border-radius:8px;pad
     <button class="nav-scrim mobile-only" id="mobile-scrim" aria-label="Close navigation" tabindex="-1"></button>
     <aside id="session-sidebar">
       <div class="side-h"><h3>Herdr Session</h3><span class="pill" id="active-pill" style="color:var(--fg3)">Connecting</span><button class="short-only mobile-icon" id="mobile-nav-spawn" disabled aria-label="New session">＋</button><button class="mobile-only mobile-icon" id="mobile-nav-close" aria-label="Close navigation">✕</button></div>
+      <label class="machine-picker">Host<select id="machine-select"><option value="local">Local host</option></select></label>
+      <div id="machine-error" role="alert" hidden></div>
       <label class="mobile-only mobile-search"><input id="mobile-filter" placeholder="Find a space, tab, or pane…" aria-label="Find a space, tab or pane" autocomplete="off"></label>
       <div class="tree" id="tree"></div>
       <div class="side-f">
@@ -317,7 +326,6 @@ select{background:var(--bg0);border:1px solid var(--line2);border-radius:8px;pad
       <div class="tabbar" id="tabbar" hidden></div>
       <div class="canvas-wrap" id="canvas-wrap" hidden><div class="canvas" id="canvas"></div></div>
       <section class="dock" id="dock">
-        <div class="dock-resize" id="dock-resize"></div>
         <div class="dh">
           <span class="dot" id="dock-dot"></span>
           <span class="title" id="dock-title">–</span>
@@ -326,7 +334,7 @@ select{background:var(--bg0);border:1px solid var(--line2);border-radius:8px;pad
           <span class="sp"></span>
           <label class="hint"><input type="checkbox" id="dock-ansi" checked> color</label>
           <button class="btn" id="dock-focus" title="Focus this pane in the Herdr TUI">Focus in Herdr</button>
-          <button class="ibtn" id="dock-close" title="Hide (Esc)">✕</button>
+          <button class="btn" id="dock-close" title="Return to pane overview without stopping the terminal (Esc)" aria-label="Return to pane overview">Overview</button>
         </div>
         <div class="term" id="dock-term"></div>
         <div class="keys" id="dock-keys"></div>
@@ -387,12 +395,47 @@ const ICON = {
   pane:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 10 3 2-3 2m5 1h5"/></svg>',
 };
 
-const S = {tree:null, ws:null, tab:null, pane:null, filter:"", open:new Set(), outputs:new Map(), err:null, busy:false, dockStick:true};
+const S = {machine:new URLSearchParams(location.hash.slice(1)).get("machine")||"local", machines:[], epoch:0, resumePane:null, tree:null, ws:null, tab:null, pane:null, filter:"", open:new Set(), outputs:new Map(), err:null, busy:false, dockStick:true};
 const phone = matchMedia("(max-width:900px)");
 let mobileView = null, mobileSelected = false, autoMobileDock = false, agentStateFilter = null;
 const drafts = new Map();
 const closingPanes = new Set();
 let interruptBusy = false, submitBusy = false;
+let activeActions = 0;
+const hostSelections = new Map();
+const draftKey = (pane, machine=S.machine) => machine+"/"+pane;
+function machineURL(path, machine=S.machine){return machine==="local"?path:path+(path.includes("?")?"&":"?")+"machine="+encodeURIComponent(machine);}
+function selectionHash(pane){
+  const params=new URLSearchParams();
+  if(S.machine!=="local")params.set("machine",S.machine);
+  if(pane)params.set("pane",pane);
+  return params.size?"#"+params.toString():location.pathname;
+}
+function renderMachines(){
+  const select=$("machine-select"),items=S.machines.length?S.machines:[{id:"local",label:"Local host",enabled:true}];
+  const options=items.map(m=>`<option value="${esc(m.id)}"${m.enabled?"":" disabled"}>${esc(m.label)}${m.enabled?"":" (disabled)"}</option>`).join("")
+    +(items.some(m=>m.id===S.machine)?"":`<option value="${esc(S.machine)}" disabled>Unavailable host</option>`);
+  if(select.dataset.options!==options){select.innerHTML=options;select.dataset.options=options;}
+  select.value=S.machine;select.disabled=activeActions>0;
+}
+async function refreshMachines(){
+  try{
+    const data=await getJSON("/api/machines");
+    if(!Array.isArray(data.machines)||!data.machines.every(m=>typeof m.id==="string"&&typeof m.label==="string"&&typeof m.enabled==="boolean"))throw new Error("The machine catalog was invalid.");
+    S.machines=data.machines;$("machine-error").hidden=true;renderMachines();
+  }catch(e){reportWebUIError("ui_error","/api/machines");$("machine-error").textContent=e.message;$("machine-error").hidden=false;}
+}
+function switchMachine(machine){
+  if(machine===S.machine)return;
+  if(activeActions||submitBusy||interruptBusy||closingPanes.size){renderMachines();toast("Wait for the current action before switching hosts.","err");return;}
+  saveDraft();hostSelections.set(S.machine,{ws:S.ws,tab:S.tab,pane:S.pane,open:S.open});
+  const saved=hostSelections.get(machine);
+  S.machine=machine;S.epoch++;S.busy=false;S.tree=null;S.err=null;S.ws=saved?.ws||null;S.tab=saved?.tab||null;S.resumePane=saved?.pane||null;S.pane=null;S.open=saved?.open||new Set();S.outputs.clear();S.dockStick=true;
+  mobileSelected=false;agentStateFilter=null;loop.done=1;
+  $("dock").classList.remove("open");$("dock-term").textContent="";$("dock-input").value="";$("canvas").innerHTML="";delete $("canvas").dataset.sig;closeSpawn();
+  history.replaceState(null,"",selectionHash(S.resumePane));renderMachines();render();refreshTree().then(pollPanes);
+}
+$("machine-select").onchange=e=>switchMachine(e.target.value);
 
 /* ---------------- utils ---------------- */
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -422,7 +465,9 @@ async function refreshCSRF(){
   return csrfRefresh;
 }
 async function act(name, body){
-  const payload=JSON.stringify(body);
+  const payload=JSON.stringify(S.machine==="local"?body:{...body,machine:S.machine});
+  activeActions++;renderMachines();
+  try{
   for(let attempt=0;attempt<2;attempt++){
     const token=CSRF;
     const {r,d}=await fetchJSON("/api/action/"+name,{method:"POST",headers:{"Content-Type":"application/json","X-CSRF-Token":token},body:payload});
@@ -435,6 +480,7 @@ async function act(name, body){
     if(d?.ok!==true||!("result" in d)){reportWebUIError("invalid_response","/api/action/"+name,r);throw new Error("Could not confirm delivery: the server response was invalid.");}
     return d.result;
   }
+  }finally{activeActions--;renderMachines();}
 }
 const paneName = p => p.label || p.terminal_title_stripped || (p.agent ? p.agent : "shell");
 const st = x => STATUSES.includes(x) ? x : "unknown";
@@ -472,44 +518,52 @@ const stripAnsi = s => s.replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g,"").replace(
 /* ---------------- data ---------------- */
 async function refreshTree(manual=false){
   if(S.busy)return;S.busy=true;
+  const epoch=S.epoch,machine=S.machine;
   const retry=$("connection-retry"),retryFocused=manual&&document.activeElement===retry;
   if(manual){$("refresh-ico").classList.add("spin");retry.disabled=true;retry.setAttribute("aria-busy","true");retry.textContent="Connecting…";}
   try{
-    S.tree=await getJSON("/api/tree");S.err=null;
+    const tree=await getJSON(machineURL("/api/tree",machine));
+    if(epoch!==S.epoch)return;
+    S.tree=tree;S.err=null;
     // keep selection valid; default to the TUI's focused space/tab
     if(!getWs(S.ws)){S.ws=S.tree.focused.workspace||S.tree.workspaces[0]?.workspace_id||null;S.tab=null;if(S.ws)S.open.add(S.ws);}
     if(!getTab(S.tab)||getTab(S.tab).workspace_id!==S.ws){const w=getWs(S.ws);S.tab=(w&&getTab(w.active_tab_id))?w.active_tab_id:(S.ws?tabsOf(S.ws)[0]?.tab_id:null);}
     if(S.pane&&!getPane(S.pane)){toast(`pane ${S.pane} is gone`,"err");closeDock();}
+    if(S.resumePane){const pane=S.resumePane;S.resumePane=null;if(getPane(pane))openDock(pane,{autofocus:false});}
     if(phone.matches)ensureMobilePane();
-  }catch(e){reportWebUIError("ui_error","/api/tree");S.err=e.message;}
+  }catch(e){if(epoch===S.epoch){reportWebUIError("ui_error","/api/tree");S.err=e.message;}}
   finally{
+    if(epoch===S.epoch){
     S.busy=false;
     if(manual){$("refresh-ico").classList.remove("spin");retry.disabled=false;retry.removeAttribute("aria-busy");retry.textContent="Retry connection";}
     render();if(retryFocused&&!S.tree&&document.activeElement===document.body)retry.focus({preventScroll:true});
+    }
   }
 }
 
 const reading=new Set();
 async function readPane(id,{lines=60,ansi=false}={}){
-  if(reading.has(id+ansi))return;reading.add(id+ansi);
-  try{const d=await getJSON(`/api/read?pane=${encodeURIComponent(id)}&lines=${lines}&ansi=${ansi?1:0}`);return d.text;}
+  const machine=S.machine,key=draftKey(id,machine)+"/"+ansi;
+  if(reading.has(key))return;reading.add(key);
+  try{const d=await getJSON(machineURL(`/api/read?pane=${encodeURIComponent(id)}&lines=${lines}&ansi=${ansi?1:0}`,machine));return d.text;}
   catch(e){reportWebUIError("ui_error","/api/read");return `⚠ ${e.message}`;}
-  finally{reading.delete(id+ansi);}
+  finally{reading.delete(key);}
 }
 async function pollPanes(){
-  if(!S.tree||!S.tab||document.hidden||phone.matches)return;
+  if(!S.tree||!S.tab||S.pane||document.hidden||phone.matches)return;
+  const epoch=S.epoch;
   const ps=panesOf(S.tab);const lay=layoutOf(S.tab);
   await Promise.all(ps.map(async p=>{
     const r=lay?.panes.find(x=>x.pane_id===p.pane_id)?.rect;
     const txt=await readPane(p.pane_id,{lines:Math.min(Math.max((r?.height||40),20),200)});
-    if(txt===undefined)return;S.outputs.set(p.pane_id,txt);
+    if(txt===undefined||epoch!==S.epoch)return;S.outputs.set(p.pane_id,txt);
     const el=document.querySelector(`.pane[data-id="${CSS.escape(p.pane_id)}"] .pb`);
     if(el){const atBottom=el.scrollHeight-el.scrollTop-el.clientHeight<30;el.textContent=stripAnsi(txt);if(atBottom)el.scrollTop=el.scrollHeight;}
   }));
 }
 async function pollDock(){
   if(!S.pane||document.hidden)return;
-  const id=S.pane,ansi=$("dock-ansi").checked;const txt=await readPane(id,{lines:400,ansi});if(txt===undefined||S.pane!==id||$("dock-ansi").checked!==ansi)return;
+  const epoch=S.epoch,id=S.pane,ansi=$("dock-ansi").checked;const txt=await readPane(id,{lines:400,ansi});if(txt===undefined||epoch!==S.epoch||S.pane!==id||$("dock-ansi").checked!==ansi)return;
   const el=$("dock-term");const atBottom=el.scrollHeight-el.scrollTop-el.clientHeight<30;
   el.innerHTML=ansi?ansiToHtml(txt):esc(txt);if(atBottom||S.dockStick){el.scrollTop=el.scrollHeight;S.dockStick=false;}
 }
@@ -522,12 +576,12 @@ function tabMatch(t){return matches(tabName(t),t.tab_id)||panesOf(t.tab_id).some
 function wsMatch(w){return matches(wsName(w),w.workspace_id)||tabsOf(w.workspace_id).some(tabMatch);}
 
 /* ---------------- render ---------------- */
-function render(){renderConnectionState();renderSide();renderCrumbs();renderTabs();if(!phone.matches)renderCanvas();renderDockHeader();renderMobile();}
+function render(){renderConnectionState();renderSide();renderCrumbs();renderTabs();if(!phone.matches&&!S.pane)renderCanvas();renderDockHeader();renderMobile();}
 
 function renderConnectionState(){
   const waiting=!S.tree;
   $("connection-state").hidden=!waiting;
-  $("tabbar").hidden=waiting;$("canvas-wrap").hidden=waiting;
+  $("tabbar").hidden=waiting;$("canvas-wrap").hidden=waiting||!!S.pane;
   for(const id of ["btn-spawn","mobile-spawn","mobile-nav-spawn","mobile-agents"])$(id).disabled=waiting;
   const title=S.err?"Waiting for Herdr":"Connecting to Herdr…";
   if($("connection-title").textContent!==title)$("connection-title").textContent=title;
@@ -558,7 +612,7 @@ function renderSide(){
   $("active-pill").textContent=`${cnt.working} active`;$("active-pill").title=`${agents.length} agents`;
   $("bars").innerHTML=agents.length?STATUSES.map(s=>cnt[s]?`<span style="width:${cnt[s]/agents.length*100}%;background:${STATUS_COLOR[s]}"></span>`:"").join(""):"";
   $("legend").innerHTML=STATUSES.filter(s=>cnt[s]).map(s=>`<span><span style="color:${STATUS_COLOR[s]}">●</span> ${s} ${cnt[s]}</span>`).join(" ");
-  let h=`<div class="node host"><span class="dot ${online?"s-online":"s-offline"}"></span>${ICON.host}<span class="name">${esc(t.host)}</span><span class="meta">local</span></div><div class="kids">`;
+  let h=`<div class="node host"><span class="dot ${online?"s-online":"s-offline"}"></span>${ICON.host}<span class="name">${esc(t.host)}</span><span class="meta">${S.machine==="local"?"local":"remote"}</span></div><div class="kids">`;
   for(const w of [...t.workspaces].sort((a,b)=>a.number-b.number)){
     if(!wsMatch(w))continue;
     const open=S.open.has(w.workspace_id)||!!S.filter;
@@ -639,22 +693,22 @@ function renderDockHeader(){
 }
 
 /* ---------------- selection ---------------- */
-function selectWs(id){S.ws=id;S.open.add(id);const w=getWs(id);S.tab=(w&&getTab(w.active_tab_id))?w.active_tab_id:tabsOf(id)[0]?.tab_id;if(phone.matches){selectMobileTabPane();return;}render();pollPanes();}
-function selectTab(id){const t=getTab(id);if(!t)return;S.ws=t.workspace_id;S.tab=id;if(phone.matches){selectMobileTabPane();return;}render();pollPanes();}
+function selectWs(id){S.ws=id;S.open.add(id);const w=getWs(id);S.tab=(w&&getTab(w.active_tab_id))?w.active_tab_id:tabsOf(id)[0]?.tab_id;if(phone.matches||S.pane){selectTabPane();return;}render();pollPanes();}
+function selectTab(id){const t=getTab(id);if(!t)return;S.ws=t.workspace_id;S.tab=id;if(phone.matches||S.pane){selectTabPane();return;}render();pollPanes();}
 function openDock(id,{autofocus=true}={}){
   const p=getPane(id);if(!p)return;
   if(S.tab!==p.tab_id){S.ws=p.workspace_id;S.tab=p.tab_id;S.open.add(p.workspace_id);}
   if(S.pane!==id){
     saveDraft();S.pane=id;S.dockStick=true;$("dock-term").innerHTML='<span class="dim">reading terminal…</span>';
-    const draft=drafts.get(id);$("dock-input").value=draft?.text||"";$("dock-input").style.height="auto";$("dock-mode").value=draft?.mode||defaultInputMode(p);
+    const draft=drafts.get(draftKey(id));$("dock-input").value=draft?.text||"";$("dock-input").style.height="auto";$("dock-mode").value=draft?.mode||defaultInputMode(p);
   }
   if(phone.matches){mobileSelected=true;setMobileView(null);}
-  history.replaceState(null,"","#pane="+encodeURIComponent(id));
+  history.replaceState(null,"",selectionHash(id));
   $("dock").classList.add("open");render();pollDock();if(autofocus&&!phone.matches)$("dock-input").focus();
 }
 function defaultInputMode(p){return p.agent&&!(phone.matches&&st(p.agent_status)==="blocked")?"prompt":"send";}
-function saveDraft(){if(S.pane)drafts.set(S.pane,{text:$("dock-input").value,mode:$("dock-mode").value});}
-function closeDock(){saveDraft();S.pane=null;$("dock").classList.remove("open");history.replaceState(null,"",location.pathname);render();}
+function saveDraft(){if(S.pane)drafts.set(draftKey(S.pane),{text:$("dock-input").value,mode:$("dock-mode").value});}
+function closeDock(){saveDraft();S.pane=null;$("dock").classList.remove("open");history.replaceState(null,"",selectionHash());render();pollPanes();}
 async function closePane(id){
   const p=getPane(id);if(!p||closingPanes.has(id))return;
   if(!confirm(`Close pane "${paneName(p)}" (${id})?${p.agent?`\nThis kills the running ${p.agent} agent.`:""}\nThe terminal pane will be removed. To interrupt the agent without closing the pane, use Ctrl-C ×2 instead.`))return;
@@ -672,7 +726,7 @@ async function interruptTwice(){
 }
 
 /* ---------------- phone navigation ---------------- */
-function mobilePaneForTab(){
+function preferredTabPane(){
   return panesOf(S.tab).find(p=>p.pane_id===S.tree.focused.pane)||panesOf(S.tab).find(p=>p.focused)||panesOf(S.tab)[0];
 }
 function ensureMobilePane(){
@@ -680,17 +734,17 @@ function ensureMobilePane(){
   const selected=getPane(S.pane);
   if(selected){S.ws=selected.workspace_id;S.tab=selected.tab_id;return;}
   const deepId=new URLSearchParams(location.hash.slice(1)).get("pane");
-  const p=mobileSelected?mobilePaneForTab():(getPane(deepId)||getPane(S.tree.focused.pane)||mobilePaneForTab()||S.tree.panes[0]);
+  const p=mobileSelected?preferredTabPane():(getPane(deepId)||getPane(S.tree.focused.pane)||preferredTabPane()||S.tree.panes[0]);
   if(!p)return;
   loop.done=1; // The mobile initializer has consumed the startup deep link.
   S.pane=p.pane_id;S.tab=p.tab_id;S.ws=p.workspace_id;S.open.add(S.ws);S.dockStick=true;
-  const draft=drafts.get(S.pane);$("dock-input").value=draft?.text||"";$("dock-mode").value=draft?.mode||defaultInputMode(p);
+  const draft=drafts.get(draftKey(S.pane));$("dock-input").value=draft?.text||"";$("dock-mode").value=draft?.mode||defaultInputMode(p);
   $("dock-term").textContent="Reading terminal…";$("dock").classList.add("open");autoMobileDock=true;
   pollDock();
 }
-function selectMobileTabPane(){
+function selectTabPane(){
   mobileSelected=true;
-  const p=mobilePaneForTab();
+  const p=preferredTabPane();
   if(p)openDock(p.pane_id,{autofocus:false});
   else{closeDock();setMobileView(null);render();}
 }
@@ -808,22 +862,18 @@ $("dock-keys").addEventListener("click",async e=>{const twice=e.target.closest("
 $("dock-input").addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey&&!e.isComposing){e.preventDefault();if(e.altKey)submitDraft("followup");else $("dock-form").requestSubmit();}});
 $("dock-input").addEventListener("input",e=>{e.target.style.height="auto";e.target.style.height=Math.min(e.target.scrollHeight,140)+"px";});
 async function submitDraft(mode){
-  const inp=$("dock-input"),text=inp.value,pane=S.pane;if(!pane||submitBusy)return;
+  const inp=$("dock-input"),text=inp.value,pane=S.pane,key=draftKey(pane);if(!pane||submitBusy)return;
   if(!text&&mode!=="send"){if(mode==="followup")toast("Type a message in the WebUI before using Alt-Enter.","err");return;}
   submitBusy=true;const send=$("dock-form").querySelector('[type="submit"]'),alt=$("dock-keys").querySelector('[data-key="alt+enter"]');send.disabled=alt.disabled=true;
   try{
     if(mode==="prompt"||mode==="followup")await act(mode,{pane,text});
     else await act("send",{pane,text,enter:mode==="send"});
-    const draft=drafts.get(pane);if(draft?.text===text)drafts.delete(pane);
+    const draft=drafts.get(key);if(draft?.text===text)drafts.delete(key);
     if(S.pane===pane&&inp.value===text){inp.value="";inp.style.height="auto";}S.dockStick=true;setTimeout(pollDock,300);setTimeout(refreshTree,600);
   }catch(x){toast(mode==="followup"?`${x.message} Text may already be in the terminal; inspect it before retrying.`:x.message,"err");}
   finally{submitBusy=false;send.disabled=alt.disabled=false;}
 }
 $("dock-form").addEventListener("submit",e=>{e.preventDefault();submitDraft($("dock-mode").value);});
-// dock resize
-$("dock-resize").addEventListener("mousedown",e=>{e.preventDefault();const startY=e.clientY,startH=$("dock").offsetHeight;
-  const mv=ev=>{$("dock").style.height=Math.max(160,Math.min(window.innerHeight-160,startH+startY-ev.clientY))+"px";};
-  const up=()=>{removeEventListener("mousemove",mv);removeEventListener("mouseup",up);};addEventListener("mousemove",mv);addEventListener("mouseup",up);});
 $("filter").addEventListener("input",e=>{S.filter=e.target.value.trim().toLowerCase();$("mobile-filter").value=e.target.value;renderSide();});
 $("btn-refresh").onclick=()=>refreshTree(true).then(pollPanes);
 $("btn-max").onclick=()=>$("body").classList.toggle("nosidebar");
@@ -856,10 +906,11 @@ $("spawn-x").onclick=$("spawn-cancel").onclick=closeSpawn;
 $("spawn").addEventListener("click",e=>{if(e.target===$("spawn"))closeSpawn();});
 $("spawn-form").addEventListener("submit",async e=>{
   e.preventDefault();const go=$("spawn-go");go.disabled=true;go.textContent=$("sp-kind").value?"Starting agent…":"Creating…";
+  const epoch=S.epoch;
   try{
     const res=await act("spawn",{workspace:$("sp-space").value||null,space_label:$("sp-space-label").value.trim()||null,tab_label:$("sp-tab-label").value.trim()||null,kind:$("sp-kind").value||null,name:$("sp-name").value.trim()||null});
     closeSpawn();$("spawn-form").reset();toast(`launched ${res.pane_id}`);
-    await refreshTree();if(res.pane_id&&getPane(res.pane_id))openDock(res.pane_id);
+    await refreshTree();if(epoch===S.epoch&&res.pane_id&&getPane(res.pane_id))openDock(res.pane_id);
   }catch(x){toast(x.message,"err");refreshTree();}
   finally{go.disabled=false;go.textContent="Launch";}
 });
@@ -874,6 +925,7 @@ async function loop(){
 }
 setInterval(()=>{if(S.pane)pollDock();},1000);
 document.addEventListener("visibilitychange",()=>{if(!document.hidden){refreshTree().then(pollPanes);}});
+renderMachines();refreshMachines();setInterval(refreshMachines,10000);
 loop();
 </script>
 </body>

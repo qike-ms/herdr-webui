@@ -1,10 +1,12 @@
 """Browser regressions with fictional sessions; never connects to live Herdr.
 
-Uses an already installed Playwright and Google Chrome (no downloads).
+Uses installed Playwright and Google Chrome by default.
+Set HERDR_WEBUI_BROWSER=chromium to use an installed Playwright Chromium.
 Run: python3 -m unittest test_ui -v
 """
 import copy
 import json
+import os
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -71,20 +73,29 @@ class FixtureHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if url.path == "/api/machines":
+            return self.reply({"machines": [
+                {"id": "local", "label": "Local demo", "enabled": True},
+                {"id": "worker-a", "label": "Worker A", "enabled": True}
+            ]})
         if url.path == "/api/tree":
             if self.server.delay_tree:
                 self.server.tree_started.set()
                 self.server.tree_release.wait(5)
             if self.server.fail_tree:
                 return self.reply({"error": self.server.tree_error}, 502)
-            return self.reply(self.server.tree)
+            tree = copy.deepcopy(self.server.tree)
+            if parse_qs(url.query).get("machine") == ["worker-a"]:
+                tree["host"] = "Worker A"
+            return self.reply(tree)
         if url.path == "/api/read":
             pane = parse_qs(url.query)["pane"][0]
             self.server.reads.append(pane)
-            if pane == self.server.delay_pane:
+            if pane == self.server.delay_pane and "machine" not in parse_qs(url.query):
                 self.server.read_started.set()
                 self.server.read_release.wait(5)
-            return self.reply({"text": f"Terminal output for {pane}\n\x1b[32mReady\x1b[0m\n"})
+            prefix = "Remote " if parse_qs(url.query).get("machine") == ["worker-a"] else ""
+            return self.reply({"text": f"{prefix}Terminal output for {pane}\n\x1b[32mReady\x1b[0m\n"})
         self.reply({"error": "not found"}, 404)
 
     def do_POST(self):
@@ -112,7 +123,7 @@ class PhoneUITest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.playwright = sync_playwright().start()
-        cls.browser = cls.playwright.chromium.launch(channel="chrome", headless=True)
+        cls.browser = cls.playwright.chromium.launch(channel=os.environ.get("HERDR_WEBUI_BROWSER", "chrome"), headless=True)
 
     @classmethod
     def tearDownClass(cls):
@@ -167,6 +178,75 @@ class PhoneUITest(unittest.TestCase):
         self.assertFalse(self.page.locator("#dock-input").evaluate("el => el === document.activeElement"))
         self.assertEqual(set(self.httpd.reads), {"p2"})
         self.assertEqual(self.httpd.actions, [])
+
+    def test_machine_switch_isolates_colliding_pane_drafts_and_routes_actions(self):
+        def select_host(host):
+            if not self.page.locator("#machine-select").is_visible():
+                self.page.get_by_role("button", name="Open spaces, tabs and panes").click()
+            self.page.locator("#machine-select").select_option(host)
+            self.page.wait_for_function("host => S.machine === host && S.tree !== null", arg=host)
+            if self.page.locator("#machine-select").is_visible():
+                self.page.get_by_role("button", name="Open spaces, tabs and panes").click()
+        self.open()
+        self.page.locator("#dock-input").fill("local draft")
+        select_host("worker-a")
+        self.assertEqual(self.page.locator("#dock-input").input_value(), "")
+        self.page.locator("#dock-term").get_by_text("Remote Terminal output for p2", exact=False).wait_for()
+        self.page.locator("#dock-input").fill("remote draft")
+        select_host("local")
+        self.assertEqual(self.page.evaluate("drafts.get('worker-a/p2')?.text"), "remote draft")
+        self.assertEqual(self.page.locator("#dock-input").input_value(), "local draft")
+        select_host("worker-a")
+        self.assertEqual(self.page.locator("#dock-input").input_value(), "remote draft",
+                         self.page.evaluate("({pane:S.pane, drafts:Array.from(drafts.entries())})"))
+        self.page.locator("#dock-form").evaluate("el => el.requestSubmit()")
+        self.page.wait_for_function("!submitBusy")
+        self.assertEqual(self.httpd.actions[-1][1]["machine"], "worker-a")
+        self.assertIn("machine=worker-a", self.page.url)
+
+    def test_remote_deep_link_selects_the_host_before_reading(self):
+        self.open("#machine=worker-a&pane=p4")
+        self.page.locator("#dock-term").get_by_text("Remote Terminal output for p4", exact=False).wait_for()
+        self.assertEqual(self.page.locator("#machine-select").input_value(), "worker-a")
+        self.assertEqual(self.httpd.actions, [])
+
+    def test_delayed_local_snapshot_cannot_replace_remote_host(self):
+        self.httpd.delay_tree = True
+        self.page.goto(self.base + "/")
+        self.assertTrue(self.httpd.tree_started.wait(2))
+        self.httpd.delay_tree = False
+        self.page.get_by_role("button", name="Open spaces, tabs and panes").click()
+        self.page.locator("#machine-select").select_option("worker-a")
+        self.page.wait_for_function("S.tree?.host === 'Worker A'")
+        with self.page.expect_response(lambda r: r.url.endswith("/api/tree")):
+            self.httpd.tree_release.set()
+        self.page.evaluate("() => new Promise(requestAnimationFrame)")
+        self.assertEqual(self.page.evaluate("S.tree.host"), "Worker A")
+        self.assertEqual(self.page.evaluate("S.machine"), "worker-a")
+
+    def test_delayed_local_output_cannot_overwrite_same_remote_pane_id(self):
+        self.httpd.delay_pane = "p2"
+        self.open()
+        self.assertTrue(self.httpd.read_started.wait(2))
+        self.page.get_by_role("button", name="Open spaces, tabs and panes").click()
+        self.page.locator("#machine-select").select_option("worker-a")
+        self.page.locator("#dock-term").get_by_text("Remote Terminal output for p2", exact=False).wait_for()
+        with self.page.expect_response(lambda r: "/api/read?" in r.url and "machine=" not in r.url):
+            self.httpd.read_release.set()
+        self.page.evaluate("() => new Promise(requestAnimationFrame)")
+        self.assertTrue(self.page.locator("#dock-term").inner_text().startswith("Remote Terminal"))
+
+    def test_host_switch_is_disabled_during_terminal_delivery(self):
+        self.open()
+        self.httpd.delay_action = True
+        self.page.locator("#dock-input").fill("fictional command")
+        self.page.locator("#dock-form").evaluate("el => el.requestSubmit()")
+        self.assertTrue(self.httpd.action_started.wait(2))
+        self.page.get_by_role("button", name="Open spaces, tabs and panes").click()
+        self.assertTrue(self.page.locator("#machine-select").is_disabled())
+        self.httpd.action_release.set()
+        self.page.wait_for_function("activeActions === 0")
+        self.assertEqual(self.page.evaluate("S.machine"), "local")
 
     def test_deep_link_takes_priority(self):
         self.open("#pane=p4")
@@ -782,16 +862,50 @@ class PhoneUITest(unittest.TestCase):
             self.page.locator('#dock-form button[type="submit"]').click()
         self.assertEqual(self.httpd.actions[-1][0], "/api/action/prompt")
 
-    def test_existing_desktop_inspector_normalizes_mobile_location(self):
+    def test_desktop_interaction_follows_workspace_selection_without_tui_focus(self):
         self.page.set_viewport_size({"width": 1440, "height": 1000})
         self.open()
         self.page.locator('[data-pane="p1"]').click()
         self.page.locator('[data-ws="w2"]').click()
-        self.assertEqual(self.page.locator("#dock-title").inner_text(), "ui-agent")
+        self.assertEqual(self.page.locator("#dock-title").inner_text(), "review-agent")
+        self.assertFalse(self.page.locator("#canvas-wrap").is_visible())
+        self.assertEqual(self.httpd.actions, [])
         self.page.set_viewport_size({"width": 390, "height": 844})
-        self.page.wait_for_function("document.querySelector('#mobile-path').textContent === 'Website / Build'")
-        self.assertEqual(self.page.locator("#mobile-title").inner_text(), "ui-agent")
-        self.assertEqual(self.page.locator("#mobile-path").inner_text(), "Website / Build")
+        self.page.wait_for_function("document.querySelector('#mobile-path').textContent === 'Docs / Writing'")
+        self.assertEqual(self.page.locator("#mobile-title").inner_text(), "review-agent")
+        self.assertEqual(self.page.locator("#mobile-path").inner_text(), "Docs / Writing")
+
+    def test_desktop_interaction_has_one_output_and_overview_keeps_draft(self):
+        self.page.set_viewport_size({"width": 1440, "height": 1000})
+        self.open()
+        self.page.locator('[data-pane="p1"]').click()
+        self.assertFalse(self.page.locator("#canvas-wrap").is_visible())
+        self.assertTrue(self.page.locator("#dock-term").is_visible())
+        self.page.locator("#dock-input").fill("saved draft")
+        dock = self.page.locator("#dock").bounding_box()
+        main = self.page.locator("#main-content").bounding_box()
+        tabs = self.page.locator("#tabbar").bounding_box()
+        self.assertAlmostEqual(dock["height"], main["height"] - tabs["height"], delta=2)
+        self.page.get_by_role("button", name="Return to pane overview").click()
+        self.assertTrue(self.page.locator("#canvas-wrap").is_visible())
+        self.assertFalse(self.page.locator("#dock").is_visible())
+        self.page.locator('[data-pane="p1"]').click()
+        self.assertEqual(self.page.locator("#dock-input").input_value(), "saved draft")
+        self.assertEqual(self.httpd.actions, [])
+
+    def test_desktop_tab_selection_changes_interactive_pane_and_handles_empty_tab(self):
+        self.page.set_viewport_size({"width": 1440, "height": 1000})
+        self.open()
+        self.page.locator('[data-pane="p1"]').click()
+        self.page.locator('[data-toggle="w2"]').click()
+        self.page.locator('[data-tab="t2"]').first.click()
+        self.assertEqual(self.page.locator("#dock-title").inner_text(), "review-agent")
+        self.assertFalse(self.page.locator("#canvas-wrap").is_visible())
+        self.page.locator('#tabbar [data-tab="t3"]').click()
+        self.assertFalse(self.page.locator("#dock").is_visible())
+        self.assertTrue(self.page.locator("#canvas-wrap").is_visible())
+        self.assertIn("no panes", self.page.locator("#canvas").inner_text().lower())
+        self.assertEqual(self.httpd.actions, [])
 
     def test_initial_loading_state_is_distinct_from_offline(self):
         self.httpd.delay_tree = True
@@ -1140,7 +1254,7 @@ class RealBridgeUITest(unittest.TestCase):
             threading.Thread(target=httpd.serve_forever, daemon=True).start()
             try:
                 with sync_playwright() as playwright:
-                    browser = playwright.chromium.launch(channel="chrome", headless=True)
+                    browser = playwright.chromium.launch(channel=os.environ.get("HERDR_WEBUI_BROWSER", "chrome"), headless=True)
                     try:
                         page = browser.new_page(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True)
                         page.goto(f"http://127.0.0.1:{httpd.server_port}/")
