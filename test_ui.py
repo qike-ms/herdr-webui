@@ -396,6 +396,37 @@ class PhoneUITest(unittest.TestCase):
         self.assertEqual(self.httpd.actions[-1][0], '/api/action/prompt')
         self.assertEqual([a[1]['text'] for a in self.httpd.actions if a[0].endswith('/send')], ['/help'])
 
+    def test_alt_enter_button_waits_for_native_cancellation(self):
+        self.open()
+        self.page.locator('#dock-input').fill('/')
+        self.page.wait_for_function('nativeInput()?.pending === 0')
+        self.httpd.delay_action = True
+        self.page.locator('#dock-input').fill('normal followup')
+        self.assertTrue(self.httpd.action_started.wait(2))
+        self.page.locator('[data-key="alt+enter"]').click()
+        self.httpd.delay_action = False;self.httpd.action_release.set()
+        self.page.wait_for_function("!nativeInput() && document.querySelector('#dock-input').value === ''")
+        self.assertEqual(self.httpd.actions[-1][0], '/api/action/followup')
+        self.assertEqual(self.httpd.actions[-1][1]['text'], 'normal followup')
+
+    def test_native_keypad_edits_stay_in_owned_browser_draft(self):
+        self.open()
+        self.page.locator('#dock-input').fill('/')
+        self.page.locator('#dock-input').press('Tab')
+        self.page.wait_for_function("document.querySelector('#dock-input').value === '/help '")
+        self.page.locator('[data-key="1"]').click()
+        self.page.locator('[data-key="left"]').click()
+        self.page.locator('[data-key="y"]').click()
+        self.page.wait_for_function('nativeInput().pending === 0')
+        self.assertEqual(self.httpd.native_text['p2'], self.page.locator('#dock-input').input_value())
+        self.page.locator('#dock-input').fill('/help changed')
+        self.page.wait_for_function('nativeInput().pending === 0')
+        self.assertEqual(self.httpd.native_text['p2'], '/help changed')
+        self.page.locator('#dock-input').press('Escape')
+        self.page.wait_for_function('!nativeInput()')
+        self.assertEqual(self.httpd.native_text['p2'], '')
+        self.assertFalse(any(a[1].get('keys') == ['left'] for a in self.httpd.actions))
+
     def test_native_parameter_alt_enter_keyboard_and_button(self):
         self.open()
         for keyboard in (True, False):
