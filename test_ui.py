@@ -76,7 +76,8 @@ class FixtureHandler(BaseHTTPRequestHandler):
         if url.path == "/api/machines":
             return self.reply({"machines": [
                 {"id": "local", "label": "Local demo", "enabled": True},
-                {"id": "worker-a", "label": "Worker A", "enabled": True}
+                {"id": "worker-a", "label": "Worker A", "enabled": True},
+                {"id": "disabled-worker", "label": "Disabled worker", "enabled": False}
             ]})
         if url.path == "/api/tree":
             if self.server.delay_tree:
@@ -181,11 +182,12 @@ class PhoneUITest(unittest.TestCase):
 
     def test_machine_switch_isolates_colliding_pane_drafts_and_routes_actions(self):
         def select_host(host):
-            if not self.page.locator("#machine-select").is_visible():
+            node = self.page.locator(f'[data-machine="{host}"]')
+            if not node.is_visible():
                 self.page.get_by_role("button", name="Open spaces, tabs and panes").click()
-            self.page.locator("#machine-select").select_option(host)
+            node.click()
             self.page.wait_for_function("host => S.machine === host && S.tree !== null", arg=host)
-            if self.page.locator("#machine-select").is_visible():
+            if node.is_visible():
                 self.page.get_by_role("button", name="Open spaces, tabs and panes").click()
         self.open()
         self.page.locator("#dock-input").fill("local draft")
@@ -207,7 +209,7 @@ class PhoneUITest(unittest.TestCase):
     def test_remote_deep_link_selects_the_host_before_reading(self):
         self.open("#machine=worker-a&pane=p4")
         self.page.locator("#dock-term").get_by_text("Remote Terminal output for p4", exact=False).wait_for()
-        self.assertEqual(self.page.locator("#machine-select").input_value(), "worker-a")
+        self.assertEqual(self.page.locator('[data-machine="worker-a"]').get_attribute("aria-expanded"), "true")
         self.assertEqual(self.httpd.actions, [])
 
     def test_delayed_local_snapshot_cannot_replace_remote_host(self):
@@ -216,7 +218,7 @@ class PhoneUITest(unittest.TestCase):
         self.assertTrue(self.httpd.tree_started.wait(2))
         self.httpd.delay_tree = False
         self.page.get_by_role("button", name="Open spaces, tabs and panes").click()
-        self.page.locator("#machine-select").select_option("worker-a")
+        self.page.locator('[data-machine="worker-a"]').click()
         self.page.wait_for_function("S.tree?.host === 'Worker A'")
         with self.page.expect_response(lambda r: r.url.endswith("/api/tree")):
             self.httpd.tree_release.set()
@@ -229,7 +231,7 @@ class PhoneUITest(unittest.TestCase):
         self.open()
         self.assertTrue(self.httpd.read_started.wait(2))
         self.page.get_by_role("button", name="Open spaces, tabs and panes").click()
-        self.page.locator("#machine-select").select_option("worker-a")
+        self.page.locator('[data-machine="worker-a"]').click()
         self.page.locator("#dock-term").get_by_text("Remote Terminal output for p2", exact=False).wait_for()
         with self.page.expect_response(lambda r: "/api/read?" in r.url and "machine=" not in r.url):
             self.httpd.read_release.set()
@@ -243,10 +245,89 @@ class PhoneUITest(unittest.TestCase):
         self.page.locator("#dock-form").evaluate("el => el.requestSubmit()")
         self.assertTrue(self.httpd.action_started.wait(2))
         self.page.get_by_role("button", name="Open spaces, tabs and panes").click()
-        self.assertTrue(self.page.locator("#machine-select").is_disabled())
+        self.assertTrue(self.page.locator('[data-machine="worker-a"]').is_disabled())
         self.httpd.action_release.set()
         self.page.wait_for_function("activeActions === 0")
+        self.assertFalse(self.page.locator('[data-machine="worker-a"]').is_disabled())
         self.assertEqual(self.page.evaluate("S.machine"), "local")
+
+    def test_desktop_hosts_are_tree_nodes_with_only_selected_host_expanded(self):
+        self.page.set_viewport_size({"width": 1440, "height": 1000})
+        self.open()
+        local = self.page.locator('#tree > [data-machine="local"]')
+        remote = self.page.locator('#tree > [data-machine="worker-a"]')
+        remote.wait_for()
+        self.assertEqual(self.page.locator("#machine-select").count(), 0)
+        self.assertTrue(local.is_visible())
+        self.assertTrue(remote.is_visible())
+        self.assertEqual(local.get_attribute("aria-expanded"), "true")
+        self.assertEqual(remote.get_attribute("aria-expanded"), "false")
+        self.assertEqual(self.page.locator("#tree > [data-machine-children]").count(), 1)
+        self.assertGreater(self.page.locator('[data-machine-children="local"] [data-ws]').count(), 0)
+        remote.click()
+        self.page.wait_for_function("S.machine === 'worker-a' && S.tree !== null")
+        self.assertEqual(local.get_attribute("aria-expanded"), "false")
+        self.assertEqual(remote.get_attribute("aria-expanded"), "true")
+        self.assertEqual(self.page.locator('[data-machine-children="local"]').count(), 0)
+        self.assertEqual(self.page.locator("#tree > [data-machine-children]").count(), 1)
+        self.assertGreater(self.page.locator('[data-machine-children="worker-a"] [data-ws]').count(), 0)
+        self.assertEqual(self.httpd.actions, [])
+
+    def test_host_nodes_support_keyboard_and_preserve_focus_on_catalog_refresh(self):
+        self.page.set_viewport_size({"width": 1440, "height": 1000})
+        self.open()
+        remote = self.page.locator('[data-machine="worker-a"]')
+        remote.focus()
+        self.page.evaluate("refreshMachines()")
+        self.assertTrue(remote.evaluate("el => el === document.activeElement"))
+        remote.press("Enter")
+        self.page.wait_for_function("S.machine === 'worker-a' && S.tree !== null")
+        self.assertTrue(remote.evaluate("el => el === document.activeElement"))
+        self.assertEqual(self.httpd.actions, [])
+
+    def test_phone_host_nodes_are_visible_touch_targets_and_support_keyboard(self):
+        self.open()
+        self.page.get_by_role("button", name="Open spaces, tabs and panes").click()
+        remote = self.page.locator('[data-machine="worker-a"]')
+        remote.wait_for(state="visible")
+        self.assertGreaterEqual(remote.bounding_box()["height"], 44)
+        self.assertTrue(self.page.locator('[data-machine="local"]').is_visible())
+        remote.focus()
+        remote.press("Enter")
+        self.page.wait_for_function("S.machine === 'worker-a' && S.tree !== null")
+        self.assertTrue(remote.evaluate("el => el === document.activeElement"))
+        self.assertEqual(self.httpd.actions, [])
+
+    def test_hosts_remain_available_during_loading_and_offline_recovery(self):
+        self.httpd.delay_tree = True
+        self.page.goto(self.base + "/")
+        self.assertTrue(self.httpd.tree_started.wait(2))
+        self.page.get_by_role("button", name="Open spaces, tabs and panes").click()
+        remote = self.page.locator('[data-machine="worker-a"]')
+        remote.wait_for(state="visible")
+        self.assertTrue(self.page.locator('[data-machine="local"]').is_visible())
+        self.httpd.delay_tree = False
+        self.httpd.fail_tree = True
+        self.httpd.tree_release.set()
+        self.page.wait_for_function("S.err === 'Fixture offline'")
+        self.assertTrue(self.page.locator('[data-machine-children="local"]').get_by_text(
+            "Waiting for Herdr. Select another host or retry the connection.", exact=True).is_visible())
+        self.assertTrue(remote.is_visible())
+        self.assertFalse(remote.is_disabled())
+        self.httpd.fail_tree = False
+        remote.click()
+        self.page.wait_for_function("S.machine === 'worker-a' && S.tree !== null")
+        self.assertEqual(self.httpd.actions, [])
+
+    def test_disabled_host_node_cannot_switch_or_deliver_commands(self):
+        self.open()
+        self.page.get_by_role("button", name="Open spaces, tabs and panes").click()
+        disabled = self.page.locator('[data-machine="disabled-worker"]')
+        disabled.wait_for(state="visible")
+        self.assertTrue(disabled.is_disabled())
+        disabled.evaluate("el => el.click()")
+        self.assertEqual(self.page.evaluate("S.machine"), "local")
+        self.assertEqual(self.httpd.actions, [])
 
     def test_deep_link_takes_priority(self):
         self.open("#pane=p4")

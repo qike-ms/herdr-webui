@@ -8,13 +8,15 @@ output and direct agent interaction from the browser.
 
 - One Python file (`server.py`, stdlib only) + one HTML file (`index.html`, no CDN, no build).
 - Talks to Herdr only through its supported CLI (`herdr api snapshot`, `pane read`, …).
-- Local Herdr session plus saved SSH machines, selected with **Host** in the sidebar.
+- Local Herdr session plus saved SSH machines, shown as top-level sidebar tree nodes.
+  Click a host to expand its spaces, tabs, and panes; only the selected host is
+  expanded. Other hosts remain visible, including while a connection is unavailable.
   Each request explicitly targets its selected host; pane IDs, drafts, snapshots,
   and delayed output never cross hosts. Remote errors never fall back to Local.
 
 ## Features
 
-- Sidebar tree of spaces, tabs, and panes with live agent status (working / blocked / done / idle).
+- Sidebar tree of hosts, spaces, tabs, and panes with live agent status (working / blocked / done / idle).
 - Tab bar and pane canvas laid out from Herdr's real split geometry; each pane streams recent output.
 - Single interactive terminal view: opening a pane replaces the desktop preview
   grid instead of showing duplicate output. **Overview** returns to the grid
@@ -88,7 +90,7 @@ HERDR_BIN=/path/to/herdr HERDR_SESSION=personal python3 server.py
 Use the canonical Herdr executable, not a wrapper that always inserts `--session`.
 Local calls use the configured session; remote calls use only `--machine` and the
 saved profile's remote session. Register and enable SSH machines in Herdr first.
-The sidebar lists saved machines without copying credentials or starting remote
+The sidebar's host nodes list saved machines without copying credentials or starting remote
 servers. The dashboard cannot assign work automatically or override native agent
 approvals. Select a host before creating a space or sending terminal input.
 Switching hosts is blocked during command delivery; other read-only navigation

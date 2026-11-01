@@ -55,6 +55,11 @@ aside{display:flex;flex-direction:column;background:var(--bg1);border-right:1px 
 .node .chev{width:12px;color:var(--fg3);transition:transform .15s;flex:none;text-align:center}
 .node.open>.chev{transform:rotate(90deg)}
 .node.host{color:var(--fg);font-weight:600}
+button.node.host{width:100%;border:0;background:none;text-align:left}
+button.node.host:hover{background:var(--bg2)}
+button.node.host.active{background:#132634;color:var(--cyan)}
+button.node.host:disabled{cursor:not-allowed;opacity:.55}
+button.node.host:focus-visible{outline:2px solid var(--cyan);outline-offset:-2px}
 .kids{margin-left:14px;border-left:1px solid var(--line);padding-left:4px}
 .ico{width:14px;height:14px;flex:none;opacity:.85}
 .dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--fg3)}
@@ -181,8 +186,6 @@ select{background:var(--bg0);border:1px solid var(--line2);border-radius:8px;pad
   .tree{padding-top:0}
   .node{min-height:44px;font-size:12px;gap:7px}
   .node .chev{display:grid;place-items:center;align-self:stretch;min-width:24px}
-  .node.host{display:none}
-  .tree>.kids{margin-left:0;border-left:0;padding-left:0}
   .kids{margin-left:9px;padding-left:3px}
   .side-f{display:none}
   .mobile-nav-footer{border-top:1px solid var(--line);padding:10px 12px;gap:8px;align-items:center;justify-content:space-between;font:10px var(--mono);color:var(--fg3)}
@@ -262,13 +265,9 @@ select{background:var(--bg0);border:1px solid var(--line2);border-radius:8px;pad
 }
 </style>
 <style>
-.machine-picker{display:flex;align-items:center;gap:10px;padding:10px 16px;color:var(--fg3);font:12px var(--mono)}
-.machine-picker select{min-width:0;flex:1;background:var(--bg1);color:var(--fg);border:1px solid var(--line);padding:8px;border-radius:5px}
 #machine-error{padding:0 16px 8px;color:var(--red);font-size:12px}
 .short-phone .side-h{justify-content:flex-end}
 .short-phone .side-h h3,.short-phone #active-pill{display:none}
-.short-phone .machine-picker{position:absolute;top:0;left:12px;right:104px;height:44px;padding:0}
-.short-phone .machine-picker select{height:44px;padding:4px;font-size:16px}
 </style>
 </head>
 <body>
@@ -291,7 +290,6 @@ select{background:var(--bg0);border:1px solid var(--line2);border-radius:8px;pad
     <button class="nav-scrim mobile-only" id="mobile-scrim" aria-label="Close navigation" tabindex="-1"></button>
     <aside id="session-sidebar">
       <div class="side-h"><h3>Herdr Session</h3><span class="pill" id="active-pill" style="color:var(--fg3)">Connecting</span><button class="short-only mobile-icon" id="mobile-nav-spawn" disabled aria-label="New session">＋</button><button class="mobile-only mobile-icon" id="mobile-nav-close" aria-label="Close navigation">✕</button></div>
-      <label class="machine-picker">Host<select id="machine-select"><option value="local">Local host</option></select></label>
       <div id="machine-error" role="alert" hidden></div>
       <label class="mobile-only mobile-search"><input id="mobile-filter" placeholder="Find a space, tab, or pane…" aria-label="Find a space, tab or pane" autocomplete="off"></label>
       <div class="tree" id="tree"></div>
@@ -411,31 +409,23 @@ function selectionHash(pane){
   if(pane)params.set("pane",pane);
   return params.size?"#"+params.toString():location.pathname;
 }
-function renderMachines(){
-  const select=$("machine-select"),items=S.machines.length?S.machines:[{id:"local",label:"Local host",enabled:true}];
-  const options=items.map(m=>`<option value="${esc(m.id)}"${m.enabled?"":" disabled"}>${esc(m.label)}${m.enabled?"":" (disabled)"}</option>`).join("")
-    +(items.some(m=>m.id===S.machine)?"":`<option value="${esc(S.machine)}" disabled>Unavailable host</option>`);
-  if(select.dataset.options!==options){select.innerHTML=options;select.dataset.options=options;}
-  select.value=S.machine;select.disabled=activeActions>0;
-}
 async function refreshMachines(){
   try{
     const data=await getJSON("/api/machines");
     if(!Array.isArray(data.machines)||!data.machines.every(m=>typeof m.id==="string"&&typeof m.label==="string"&&typeof m.enabled==="boolean"))throw new Error("The machine catalog was invalid.");
-    S.machines=data.machines;$("machine-error").hidden=true;renderMachines();
+    S.machines=data.machines;$("machine-error").hidden=true;renderSide();
   }catch(e){reportWebUIError("ui_error","/api/machines");$("machine-error").textContent=e.message;$("machine-error").hidden=false;}
 }
 function switchMachine(machine){
   if(machine===S.machine)return;
-  if(activeActions||submitBusy||interruptBusy||closingPanes.size){renderMachines();toast("Wait for the current action before switching hosts.","err");return;}
+  if(activeActions||submitBusy||interruptBusy||closingPanes.size){renderSide();toast("Wait for the current action before switching hosts.","err");return;}
   saveDraft();hostSelections.set(S.machine,{ws:S.ws,tab:S.tab,pane:S.pane,open:S.open});
   const saved=hostSelections.get(machine);
   S.machine=machine;S.epoch++;S.busy=false;S.tree=null;S.err=null;S.ws=saved?.ws||null;S.tab=saved?.tab||null;S.resumePane=saved?.pane||null;S.pane=null;S.open=saved?.open||new Set();S.outputs.clear();S.dockStick=true;
   mobileSelected=false;agentStateFilter=null;loop.done=1;
   $("dock").classList.remove("open");$("dock-term").textContent="";$("dock-input").value="";$("canvas").innerHTML="";delete $("canvas").dataset.sig;closeSpawn();
-  history.replaceState(null,"",selectionHash(S.resumePane));renderMachines();render();refreshTree().then(pollPanes);
+  history.replaceState(null,"",selectionHash(S.resumePane));render();refreshTree().then(pollPanes);
 }
-$("machine-select").onchange=e=>switchMachine(e.target.value);
 
 /* ---------------- utils ---------------- */
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -466,7 +456,7 @@ async function refreshCSRF(){
 }
 async function act(name, body){
   const payload=JSON.stringify(S.machine==="local"?body:{...body,machine:S.machine});
-  activeActions++;renderMachines();
+  activeActions++;renderSide();
   try{
   for(let attempt=0;attempt<2;attempt++){
     const token=CSRF;
@@ -480,7 +470,7 @@ async function act(name, body){
     if(d?.ok!==true||!("result" in d)){reportWebUIError("invalid_response","/api/action/"+name,r);throw new Error("Could not confirm delivery: the server response was invalid.");}
     return d.result;
   }
-  }finally{activeActions--;renderMachines();}
+  }finally{activeActions--;renderSide();}
 }
 const paneName = p => p.label || p.terminal_title_stripped || (p.agent ? p.agent : "shell");
 const st = x => STATUSES.includes(x) ? x : "unknown";
@@ -599,21 +589,26 @@ function renderConnectionState(){
 
 function renderSide(){
   const t=S.tree,el=$("tree");
-  const focused=phone.matches&&el.contains(document.activeElement)?document.activeElement:null;
-  const focusKey=focused&&["toggle","pane","tab","ws"].find(k=>focused.dataset[k]);
+  const focused=el.contains(document.activeElement)?document.activeElement:null;
+  const focusKey=focused&&["machine","toggle","pane","tab","ws"].find(k=>focused.dataset[k]);
   const focusId=focusKey&&focused.dataset[focusKey];
   const online=!!t&&!S.err;
   $("conn").innerHTML=online?'<span style="color:var(--green)">● CONNECTED</span>':`<span style="color:${S.err?"var(--red)":"var(--fg3)"}" title="${esc(S.err||"")}">● ${t?"STALE":S.err?"OFFLINE":"CONNECTING"}</span>`;
   $("active-pill").style.color=t?"var(--green)":"var(--fg3)";
-  if(!t){$("active-pill").textContent=S.err?"Offline":"Connecting";el.innerHTML=`<div class="hint" style="padding:10px">${S.err?"Waiting for Herdr. Start it to see your sessions here.":"Loading…"}</div>`;return;}
+  if(t){
   $("ver").textContent=`v${t.version} · proto ${t.protocol}`;$("lat").textContent=`${t.latency_ms} ms`;
   $("counts").textContent=`${t.workspaces.length} · ${t.tabs.length} · ${t.panes.length}`;
   const agents=t.panes.filter(p=>p.agent);const cnt=Object.fromEntries(STATUSES.map(s=>[s,agents.filter(p=>st(p.agent_status)===s).length]));
   $("active-pill").textContent=`${cnt.working} active`;$("active-pill").title=`${agents.length} agents`;
   $("bars").innerHTML=agents.length?STATUSES.map(s=>cnt[s]?`<span style="width:${cnt[s]/agents.length*100}%;background:${STATUS_COLOR[s]}"></span>`:"").join(""):"";
   $("legend").innerHTML=STATUSES.filter(s=>cnt[s]).map(s=>`<span><span style="color:${STATUS_COLOR[s]}">●</span> ${s} ${cnt[s]}</span>`).join(" ");
-  let h=`<div class="node host"><span class="dot ${online?"s-online":"s-offline"}"></span>${ICON.host}<span class="name">${esc(t.host)}</span><span class="meta">${S.machine==="local"?"local":"remote"}</span></div><div class="kids">`;
-  for(const w of [...t.workspaces].sort((a,b)=>a.number-b.number)){
+  }else{
+    $("active-pill").textContent=S.err?"Offline":"Connecting";$("active-pill").title="";
+    for(const id of ["ver","lat","counts"])$(id).textContent="–";
+    $("bars").innerHTML="";$("legend").innerHTML="";
+  }
+  let h="";
+  for(const w of [...(t?.workspaces||[])].sort((a,b)=>a.number-b.number)){
     if(!wsMatch(w))continue;
     const open=S.open.has(w.workspace_id)||!!S.filter;
     h+=`<div class="node ${open?"open":""} ${w.workspace_id===S.ws?"active":""}" data-ws="${esc(w.workspace_id)}"><span class="chev" data-toggle="${esc(w.workspace_id)}">›</span>${ICON.space}<span class="name">${esc(wsName(w))}</span><span class="dot s-${st(w.agent_status)}" title="${esc(w.agent_status)}"></span><span class="count">${w.pane_count}</span></div>`;
@@ -631,7 +626,14 @@ function renderSide(){
     }
     h+=`</div>`;
   }
-  el.innerHTML=h+"</div>";
+  const items=S.machines.length?[...S.machines]:[{id:"local",label:"Local host",enabled:true}];
+  if(!items.some(m=>m.id===S.machine))items.push({id:S.machine,label:"Unavailable host",enabled:false});
+  el.innerHTML=items.map(m=>{
+    const selected=m.id===S.machine,state=selected?(online?"online":S.err?"offline":"unknown"):"unknown";
+    const host=`<button type="button" class="node host ${selected?"active open":""}" data-machine="${esc(m.id)}" aria-label="Select host ${esc(m.label)}" aria-expanded="${selected}"${selected?' aria-current="true"':""}${!m.enabled||activeActions>0?" disabled":""}><span class="chev">›</span>${ICON.host}<span class="name">${esc(m.label)}</span><span class="meta">${m.id==="local"?"local":"remote"}${m.enabled?"":" / disabled"}</span><span class="dot s-${state}"></span></button>`;
+    const children=t?h:`<div class="hint" style="padding:10px">${S.err?"Waiting for Herdr. Select another host or retry the connection.":"Loading…"}</div>`;
+    return host+(selected?`<div class="kids" data-machine-children="${esc(m.id)}">${children}</div>`:"");
+  }).join("");
   if(phone.matches)el.querySelectorAll(".node:not(.host),[data-toggle]").forEach(n=>{n.tabIndex=0;n.setAttribute("role","button");if(n.dataset.toggle)n.setAttribute("aria-label","Expand or collapse space");});
   if(focusKey)el.querySelector(`[data-${focusKey}="${CSS.escape(focusId)}"]`)?.focus({preventScroll:true});
 }
@@ -840,6 +842,7 @@ $("mobile-interrupt").onclick=interruptTwice;
 $("mobile-color").onchange=()=>{$("dock-ansi").checked=$("mobile-color").checked;pollDock();};
 $("tree").addEventListener("keydown",e=>{if(phone.matches&&(e.key==="Enter"||e.key===" ")&&e.target.matches(".node,[data-toggle]")){e.preventDefault();e.target.click();}});
 $("tree").addEventListener("click",e=>{
+  const host=e.target.closest("[data-machine]");if(host){if(!host.disabled)switchMachine(host.dataset.machine);return;}
   const tog=e.target.closest("[data-toggle]");if(tog){const id=tog.dataset.toggle;S.open.has(id)?S.open.delete(id):S.open.add(id);renderSide();return;}
   const n=e.target.closest(".node");if(!n)return;
   if(n.dataset.pane)openDock(n.dataset.pane);else if(n.dataset.tab)selectTab(n.dataset.tab);else if(n.dataset.ws)selectWs(n.dataset.ws);
@@ -925,7 +928,7 @@ async function loop(){
 }
 setInterval(()=>{if(S.pane)pollDock();},1000);
 document.addEventListener("visibilitychange",()=>{if(!document.hidden){refreshTree().then(pollPanes);}});
-renderMachines();refreshMachines();setInterval(refreshMachines,10000);
+renderSide();refreshMachines();setInterval(refreshMachines,10000);
 loop();
 </script>
 </body>
