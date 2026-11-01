@@ -491,6 +491,35 @@ class PhoneUITest(unittest.TestCase):
         self.page.wait_for_function("nativeInput()?.phase === 'model' && nativeInput().pending === 0")
         self.assertEqual([(a[0].split('/')[-1],a[1].get('text',a[1].get('keys'))) for a in self.httpd.actions], [('send','/'),('keys',['backspace']),('send','/model'),('keys',['enter'])])
 
+    def test_composer_enter_reacquires_slash_after_cancel_in_type_mode(self):
+        self.open()
+        self.page.locator('#dock-mode').select_option('type')
+        self.page.locator('#dock-input').fill('/')
+        self.page.wait_for_function('nativeInput()?.pending === 0')
+        self.httpd.delay_action = True
+        self.page.locator('#dock-input').fill('')
+        self.assertTrue(self.httpd.action_started.wait(2))
+        self.page.locator('#dock-input').fill('/')
+        self.page.locator('#dock-input').press('Enter')
+        self.httpd.delay_action = False;self.httpd.action_release.set()
+        self.page.wait_for_function("!nativeInput() && document.querySelector('#dock-input').value === ''")
+        self.assertEqual(self.httpd.actions[-1][1], {'pane':'p2','keys':['enter']})
+
+    def test_retyped_slash_survives_cancel_and_pane_switch(self):
+        self.open()
+        self.page.locator('#dock-input').fill('/')
+        self.page.wait_for_function('nativeInput()?.pending === 0')
+        self.httpd.delay_action = True
+        self.page.locator('#dock-input').fill('')
+        self.assertTrue(self.httpd.action_started.wait(2))
+        self.page.locator('#dock-input').fill('/model')
+        self.choose('p1')
+        self.httpd.delay_action = False;self.httpd.action_release.set()
+        self.page.wait_for_function("nativeInputs.get('p2')?.pending === 0")
+        self.choose('p2')
+        self.assertEqual(self.httpd.native_text['p2'], '/model')
+        self.assertTrue(self.page.locator('#native-menu').is_visible())
+
     def test_native_parameter_alt_enter_keyboard_and_button(self):
         self.open()
         for keyboard in (True, False):

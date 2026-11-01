@@ -569,7 +569,10 @@ function mirrorNativeText(){
     await syncNativeText(n,cancel?"":text);
     if(cancel){
       nativeInputs.delete(n.pane);renderNativeMenu();
-      if(S.pane===n.pane&&$("dock-input").value.startsWith("/"))mirrorNativeText();
+      const current=S.pane===n.pane?$("dock-input").value:drafts.get(n.pane)?.text;
+      if(current?.startsWith("/")&&!submitBusy){
+        const next=createNativeInput(n.pane);queueNative(next,async()=>{await syncNativeText(next,current);await readNative(next,true);});
+      }
       return;
     }
     if(n.phase==="command"&&!text.startsWith("/"))n.phase="params";
@@ -599,6 +602,22 @@ function selectNativeModel(index){
       await readNative(n,true);
     }
   });
+}
+function nativeKeypad(n,key){
+  const inp=$("dock-input");
+  if(["left","right"].includes(key)){
+    if(S.pane!==n.pane)return;
+    const pos=Math.max(0,Math.min(inp.value.length,inp.selectionStart+(key==="left"?-1:1)));inp.focus();inp.setSelectionRange(pos,pos);return;
+  }
+  if(key.length===1){
+    if(n.locked||n.failed)return;
+    const text=S.pane===n.pane?inp.value:drafts.get(n.pane)?.text||n.sent;
+    const start=S.pane===n.pane?inp.selectionStart:text.length,end=S.pane===n.pane?inp.selectionEnd:text.length,next=text.slice(0,start)+key+text.slice(end);
+    updateNativeDraft(n,next);
+    if(S.pane===n.pane)inp.setSelectionRange(start+1,start+1);
+    queueNative(n,async()=>{await syncNativeText(n,next);await readNative(n,true);});return;
+  }
+  nativeKey(key,n);
 }
 function nativeKey(key,n=nativeInput()){
   if(!n)return false;
@@ -988,17 +1007,10 @@ $("dock-ansi").onchange=()=>{$("mobile-color").checked=$("dock-ansi").checked;po
 $("dock-focus").onclick=async()=>{const p=getPane(S.pane);if(!p)return;try{await act("focus",{pane:p.pane_id,tab:p.tab_id,agent:!!p.agent});toast("focused in Herdr TUI");refreshTree();}catch(x){toast(x.message,"err");}};
 const KEYS=[["Enter","enter"],["Alt-Enter","alt+enter"],["Esc","esc"],["Ctrl-C","ctrl+c"],["Tab","tab"],["↑","up"],["↓","down"],["←","left"],["→","right"],["y","y"],["n","n"],["1","1"],["2","2"],["3","3"],["Ctrl-D","ctrl+d"],["Ctrl-L","ctrl+l"]];
 $("dock-keys").innerHTML='<span class="hint" style="align-self:center;margin-right:4px">keys:</span>'+KEYS.map(([l,k])=>`<button class="btn" data-key="${esc(k)}">${esc(l)}</button>${k==="ctrl+c"?'<button class="btn mobile-key" data-interrupt-twice title="Send Ctrl-C twice without closing the pane">Ctrl-C ×2</button>':""}`).join("");
-$("dock-keys").addEventListener("click",async e=>{const twice=e.target.closest("[data-interrupt-twice]");if(twice){await interruptTwice();return;}const b=e.target.closest("[data-key]");if(!b||!S.pane)return;if(nativeInput()&&!nativeInput().cancelRequested){
-  const key=b.dataset.key,inp=$("dock-input");
-  if(["left","right"].includes(key)){
-    const pos=Math.max(0,Math.min(inp.value.length,inp.selectionStart+(key==="left"?-1:1)));inp.focus();inp.setSelectionRange(pos,pos);return;
-  }
-  if(key.length===1){if(!inp.readOnly){inp.setRangeText(key,inp.selectionStart,inp.selectionEnd,"end");mirrorNativeText();}return;}
-  nativeKey(key);return;
-}if(b.dataset.key==="alt+enter"){await submitDraft("followup");return;}
+$("dock-keys").addEventListener("click",async e=>{const twice=e.target.closest("[data-interrupt-twice]");if(twice){await interruptTwice();return;}const b=e.target.closest("[data-key]");if(!b||!S.pane)return;if(nativeInput()&&!nativeInput().cancelRequested){nativeKeypad(nativeInput(),b.dataset.key);return;}if(b.dataset.key==="alt+enter"){await submitDraft("followup");return;}
 const pane=S.pane,cancelling=nativeInput();
 try{if(cancelling){await cancelling.queue;if(cancelling.failed)throw new Error("Could not confirm slash cancellation; inspect the pane.");}
-const owner=nativeInputs.get(pane);if(owner){nativeKey(b.dataset.key,owner);return;}
+const owner=nativeInputs.get(pane);if(owner){nativeKeypad(owner,b.dataset.key);return;}
 await act("keys",{pane,keys:[b.dataset.key]});S.dockStick=true;setTimeout(pollDock,250);}catch(x){toast(x.message,"err");}});
 $("dock-input").addEventListener("keydown",e=>{
   if(e.isComposing)return;
@@ -1015,7 +1027,14 @@ async function submitDraft(mode){
   if(!text&&mode!=="send"){if(mode==="followup")toast("Type a message in the WebUI before using Alt-Enter.","err");return;}
   submitBusy=true;let confirmed=false;const send=$("dock-form").querySelector('[type="submit"]'),alt=$("dock-keys").querySelector('[data-key="alt+enter"]');send.disabled=alt.disabled=true;
   try{
-    if(cancelling){await cancelling.queue;if(cancelling.failed)throw new Error("Could not confirm slash cancellation; inspect the pane.");}
+    if(cancelling){
+      await cancelling.queue;if(cancelling.failed)throw new Error("Could not confirm slash cancellation; inspect the pane.");
+      if(text.startsWith("/")&&getPane(pane)?.agent){
+        const n=nativeInputs.get(pane)||createNativeInput(pane);
+        queueNative(n,async()=>{await syncNativeText(n,text);await readNative(n,true);});
+        nativeKey(mode==="followup"?"alt+enter":"enter",n);return;
+      }
+    }
     if(mode==="prompt"||mode==="followup")await act(mode,{pane,text});
     else await act("send",{pane,text,enter:mode==="send"});
     confirmed=true;
