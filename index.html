@@ -501,7 +501,7 @@ function createNativeInput(pane,phase="command",screen=""){
   const n={pane,phase,sent:"",screen,queue:Promise.resolve(),pending:0,failed:false,locked:false};nativeInputs.set(pane,n);return n;
 }
 function renderNativeMenu(){
-  const n=nativeInput(),visible=n&&(n.failed||n.phase!=="params");
+  const n=nativeInput(),visible=n&&!n.cancelRequested&&(n.failed||n.phase!=="params");
   $("dock-input").readOnly=!!(n&&(n.locked||n.failed));
   $("native-menu-reset").hidden=!n?.failed;
   $("native-menu").hidden=!visible;
@@ -557,10 +557,15 @@ function mirrorNativeText(){
   if(!n&&text.startsWith("/")&&getPane(S.pane)?.agent&&!submitBusy){
     n=createNativeInput(S.pane);renderNativeMenu();
   }
-  if(!n)return;
+  if(!n||n.cancelRequested)return;
+  if(n.phase==="command"&&!text){n.cancelRequested=true;renderNativeMenu();}
   queueNative(n,async()=>{
     await syncNativeText(n,text);
-    if(n.phase==="command"&&!text&&n.pending===1){nativeInputs.delete(n.pane);renderNativeMenu();return;}
+    if(n.cancelRequested&&!text){
+      nativeInputs.delete(n.pane);renderNativeMenu();
+      if(S.pane===n.pane&&$("dock-input").value.startsWith("/"))mirrorNativeText();
+      return;
+    }
     if(n.phase==="command"&&!text.startsWith("/"))n.phase="params";
     await readNative(n,true);
   });
@@ -593,7 +598,7 @@ function nativeKey(key){
   const n=nativeInput();if(!n)return false;
   if(n.failed||(n.locked&&!["up","down"].includes(key)))return true;
   const text=$("dock-input").value,transitionPending=n.locked;
-  if(["tab","enter","esc"].includes(key)){n.locked=true;renderNativeMenu();}
+  if(["tab","enter","alt+enter","esc"].includes(key)){n.locked=true;renderNativeMenu();}
   queueNative(n,async()=>{
     if(!transitionPending)await syncNativeText(n,text);
     // Let bracketed paste settle before a dependent native completion/selection key.
@@ -616,7 +621,7 @@ function nativeKey(key){
       const model=n.phase!=="model"&&(n.sent.trim()==="/model"||(n.phase==="command"&&/^\s*[→❯›>]\s*\/?model\b/m.test(stripAnsi(n.screen))));
       if(key==="esc")await syncNativeText(n,"");
       await act("keys",{pane:n.pane,keys:[key]});
-      if(key==="enter"||key==="esc"){
+      if(key==="enter"||key==="alt+enter"||key==="esc"){
         if(key==="enter"&&model){n.phase="model";n.sent="";updateNativeDraft(n,"");await readNative(n,true);}
         else{nativeInputs.delete(n.pane);updateNativeDraft(n,"");if(S.pane===n.pane)renderNativeMenu();}
       }else await readNative(n,true);
@@ -978,18 +983,20 @@ $("dock-keys").innerHTML='<span class="hint" style="align-self:center;margin-rig
 $("dock-keys").addEventListener("click",async e=>{const twice=e.target.closest("[data-interrupt-twice]");if(twice){await interruptTwice();return;}const b=e.target.closest("[data-key]");if(!b||!S.pane)return;if(nativeInput()){nativeKey(b.dataset.key);return;}if(b.dataset.key==="alt+enter"){await submitDraft("followup");return;}try{await act("keys",{pane:S.pane,keys:[b.dataset.key]});S.dockStick=true;setTimeout(pollDock,250);}catch(x){toast(x.message,"err");}});
 $("dock-input").addEventListener("keydown",e=>{
   if(e.isComposing)return;
-  const key={ArrowUp:"up",ArrowDown:"down",Tab:"tab",Enter:"enter",Escape:"esc"}[e.key];
-  if(nativeInput()&&key&&!e.shiftKey&&!(nativeInput().phase==="params"&&["up","down"].includes(key))){e.preventDefault();e.stopPropagation();nativeKey(key);return;}
+  const key=e.key==="Enter"&&e.altKey?"alt+enter":{ArrowUp:"up",ArrowDown:"down",Tab:"tab",Enter:"enter",Escape:"esc"}[e.key];
+  if(nativeInput()&&!nativeInput().cancelRequested&&key&&!e.shiftKey&&!(nativeInput().phase==="params"&&["up","down"].includes(key))){e.preventDefault();e.stopPropagation();nativeKey(key);return;}
   if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();if(e.altKey)submitDraft("followup");else $("dock-form").requestSubmit();}
 });
 $("dock-input").addEventListener("input",e=>{e.target.style.height="auto";e.target.style.height=Math.min(e.target.scrollHeight,140)+"px";if(!e.isComposing)mirrorNativeText();});
 $("dock-input").addEventListener("compositionend",mirrorNativeText);
 async function submitDraft(mode){
   const inp=$("dock-input"),text=inp.value,pane=S.pane;if(!pane||submitBusy)return;
-  if(nativeInput()){nativeKey("enter");return;}
+  const cancelling=nativeInput()?.cancelRequested?nativeInput():null;
+  if(nativeInput()&&!cancelling){nativeKey(mode==="followup"?"alt+enter":"enter");return;}
   if(!text&&mode!=="send"){if(mode==="followup")toast("Type a message in the WebUI before using Alt-Enter.","err");return;}
   submitBusy=true;const send=$("dock-form").querySelector('[type="submit"]'),alt=$("dock-keys").querySelector('[data-key="alt+enter"]');send.disabled=alt.disabled=true;
   try{
+    if(cancelling){await cancelling.queue;if(cancelling.failed)throw new Error("Could not confirm slash cancellation; inspect the pane.");}
     if(mode==="prompt"||mode==="followup")await act(mode,{pane,text});
     else await act("send",{pane,text,enter:mode==="send"});
     const draft=drafts.get(pane);if(draft?.text===text)drafts.delete(pane);

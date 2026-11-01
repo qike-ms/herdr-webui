@@ -128,7 +128,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
                     self.server.native_selected[pane] = self.server.native_selected.get(pane, 0) + (1 if key == "down" else -1)
                 elif key == "tab":
                     self.server.native_text[pane] = "/model" if self.server.native_selected.get(pane, 0) % 2 else "/help"
-                elif key == "enter":
+                elif key in ("enter", "alt+enter"):
                     if pane in self.server.model_panes:
                         self.server.model_panes.remove(pane)
                     elif text.strip() == "/model" or (" " not in text and self.server.native_selected.get(pane, 0) % 2):
@@ -344,6 +344,38 @@ class PhoneUITest(unittest.TestCase):
         with self.page.expect_response("**/api/action/prompt"):
             self.page.locator("#dock-input").press("Enter")
         self.assertEqual(self.httpd.actions[-1][1], {"pane": "p2", "text": "ordinary message"})
+
+    def test_fast_slash_deletion_keeps_new_message_local(self):
+        self.open()
+        self.page.locator('#dock-input').fill('/')
+        self.page.wait_for_function('nativeInput()?.pending === 0')
+        self.httpd.delay_action = True
+        self.page.locator('#dock-input').fill('')
+        self.assertTrue(self.httpd.action_started.wait(2))
+        self.page.locator('#dock-input').fill('ordinary after cancellation')
+        self.page.locator('#dock-input').press('Enter')
+        self.httpd.delay_action = False
+        self.httpd.action_release.set()
+        self.page.wait_for_function("document.querySelector('#dock-input').value === '' && !nativeInput()")
+        self.assertEqual(self.httpd.actions[-1][0], '/api/action/prompt')
+        self.assertEqual(self.httpd.actions[-1][1]['text'], 'ordinary after cancellation')
+        self.assertEqual([a[1]['text'] for a in self.httpd.actions if a[0].endswith('/send')], ['/'])
+
+    def test_native_parameter_alt_enter_keyboard_and_button(self):
+        self.open()
+        for keyboard in (True, False):
+            self.page.locator('#dock-input').fill('/')
+            self.page.locator('#dock-input').press('Tab')
+            self.page.wait_for_function("document.querySelector('#dock-input').value === '/help '")
+            self.page.locator('#dock-input').press_sequentially('topic')
+            if keyboard:
+                self.page.locator('#dock-input').press('Alt+Enter')
+            else:
+                self.page.locator('[data-key="alt+enter"]').click()
+            self.page.wait_for_function('!nativeInput()')
+            self.assertEqual(self.httpd.actions[-1][1], {'pane':'p2','keys':['alt+enter']})
+            self.assertEqual(self.page.locator('#dock-input').input_value(), '')
+            self.assertEqual(self.httpd.native_text['p2'], '')
 
     def test_shell_slash_remains_local(self):
         self.open("#pane=p3")
