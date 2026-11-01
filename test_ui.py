@@ -1260,6 +1260,54 @@ class PhoneUITest(unittest.TestCase):
         self.page.evaluate("refreshTree()")
         self.assertTrue(self.page.locator('[data-pane="p1"]').evaluate("el => el === document.activeElement"))
 
+    def test_phone_wraps_long_terminal_lines_without_changing_desktop_layout(self):
+        token = "unbroken_" * 60
+        text = "wrap-fixture\n  " + "Long output with spaces. " * 60 + "\n  " + token + "\n" + "─" * 300 + "\n  indented code\n"
+        self.page.route(self.base + "/api/read*", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps({
+                "text": "\x1b[32m" + text + "\x1b[0m"
+                if parse_qs(urlparse(route.request.url).query).get("ansi") == ["1"] else text})))
+        self.open()
+        term = self.page.locator("#dock-term")
+        term.get_by_text("wrap-fixture", exact=False).first.wait_for()
+        for color in (True, False):
+            self.page.get_by_role("button", name="Pane actions", exact=True).first.click()
+            self.page.locator("#mobile-color").set_checked(color)
+            self.page.get_by_role("button", name="Pane actions", exact=True).first.click()
+            self.page.wait_for_function(
+                "color => Boolean(document.querySelector('#dock-term span[style]')) === color", arg=color)
+            for width, height in ((320, 700), (375, 812), (430, 932), (844, 390), (390, 430),
+                                  (1440, 1000), (390, 844)):
+                with self.subTest(color=color, width=width, height=height):
+                    self.page.set_viewport_size({"width": width, "height": height})
+                    if width > 900:
+                        self.page.locator('#tree [data-pane="p2"]').click()
+                    term.get_by_text("wrap-fixture", exact=False).first.wait_for()
+                    self.assertEqual(term.inner_text(), text)
+                    geometry = term.evaluate("""(el, token) => {
+                        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+                        let node;
+                        while ((node = walker.nextNode())) {
+                            const start = node.textContent.indexOf(token);
+                            if (start < 0) continue;
+                            const range = document.createRange();
+                            range.setStart(node, start); range.setEnd(node, start + token.length);
+                            return {lines: range.getClientRects().length, width: el.clientWidth,
+                                    scrollWidth: el.scrollWidth, whiteSpace: getComputedStyle(el).whiteSpace};
+                        }
+                        throw new Error("Fixture token missing");
+                    }""", token)
+                    if width <= 900:
+                        self.assertEqual(geometry["whiteSpace"], "pre-wrap")
+                        self.assertLessEqual(geometry["scrollWidth"], geometry["width"])
+                        self.assertGreater(geometry["lines"], 1)
+                        self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
+                    else:
+                        self.assertEqual(geometry["whiteSpace"], "pre")
+                        self.assertGreater(geometry["scrollWidth"], geometry["width"])
+                        self.assertEqual(geometry["lines"], 1)
+        self.assertEqual(self.httpd.actions, [])
+
     def test_narrow_and_landscape_views_keep_composer_inside_viewport(self):
         self.open()
         for width, height in ((320, 700), (375, 812), (430, 932), (844, 390), (390, 430)):

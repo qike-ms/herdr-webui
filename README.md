@@ -46,6 +46,9 @@ output and direct agent interaction from the browser.
 - The message composer and horizontally scrollable terminal keys stay below the
   output. Input drafts are kept separately per pane while the page is open.
   Selecting a pane does not open the phone keyboard or send a command.
+- Phone terminal output wraps to the screen, including long paths and unbroken
+  lines, while preserving newlines, indentation, and ANSI colors. Desktop output
+  keeps its original unwrapped terminal layout.
 - Input modes remain **Prompt agent**, **Type + Enter**, and **Type only**.
   Blocked agents default to **Type + Enter** so approval replies reach the terminal.
 - **Alt-Enter**, beside Enter, sends the WebUI message text to the selected pane

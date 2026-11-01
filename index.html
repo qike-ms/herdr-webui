@@ -200,7 +200,7 @@ select{background:var(--bg0);border:1px solid var(--line2);border-radius:8px;pad
   .dock,.dock.open{flex:1;height:auto!important;min-height:0;border-top:0}
   .dock:not(.open){display:none}
   .dock .dh{display:none}
-  .term{padding:16px 14px;font:12px/1.65 var(--mono);overscroll-behavior:contain}
+  .term{min-width:0;padding:16px 14px;font:12px/1.65 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;overscroll-behavior:contain}
   .dock .keys{gap:6px;padding:8px 12px;flex-wrap:nowrap;overflow-x:auto;order:3;flex:none;padding-bottom:max(8px,env(safe-area-inset-bottom))}
   .keys .hint{display:none}
   .keys .btn{min-height:34px;padding:0 11px;flex:none;font-size:11px}
