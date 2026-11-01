@@ -361,6 +361,41 @@ class PhoneUITest(unittest.TestCase):
         self.assertEqual(self.httpd.actions[-1][1]['text'], 'ordinary after cancellation')
         self.assertEqual([a[1]['text'] for a in self.httpd.actions if a[0].endswith('/send')], ['/'])
 
+    def test_native_down_cannot_unlock_queued_tab(self):
+        self.open()
+        self.page.locator('#dock-input').fill('/')
+        self.page.wait_for_function('nativeInput()?.pending === 0')
+        self.httpd.delay_action = True
+        self.page.locator('#dock-input').press('ArrowDown')
+        self.assertTrue(self.httpd.action_started.wait(2))
+        self.page.locator('#dock-input').press('Tab')
+        self.httpd.delay_action = False
+        self.httpd.action_release.set()
+        self.page.wait_for_function("nativeInput()?.sent === '/model '")
+        self.assertEqual([a[1].get('keys') for a in self.httpd.actions if a[0].endswith('/keys')], [['down'],['tab']])
+        self.page.wait_for_function('nativeInput().pending === 0')
+        self.assertFalse(self.page.locator('#dock-input').evaluate('el => el.readOnly'))
+
+    def test_failed_native_cancellation_exposes_reset(self):
+        self.open()
+        self.page.locator('#dock-input').fill('/')
+        self.page.wait_for_function('nativeInput()?.pending === 0')
+        self.httpd.fail_action = True
+        self.page.locator('#dock-input').fill('')
+        self.page.wait_for_function('nativeInput()?.failed')
+        self.assertTrue(self.page.locator('#native-menu-reset').is_visible())
+        self.assertTrue(self.page.locator('#dock-input').evaluate('el => el.readOnly'))
+
+    def test_replacing_slash_draft_keeps_message_local(self):
+        self.open()
+        self.page.locator('#dock-input').fill('/help')
+        self.page.wait_for_function('nativeInput()?.pending === 0')
+        self.page.locator('#dock-input').fill('ordinary replacement')
+        self.page.locator('#dock-input').press('Enter')
+        self.page.wait_for_function("!nativeInput() && document.querySelector('#dock-input').value === ''")
+        self.assertEqual(self.httpd.actions[-1][0], '/api/action/prompt')
+        self.assertEqual([a[1]['text'] for a in self.httpd.actions if a[0].endswith('/send')], ['/help'])
+
     def test_native_parameter_alt_enter_keyboard_and_button(self):
         self.open()
         for keyboard in (True, False):

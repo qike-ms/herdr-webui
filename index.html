@@ -501,7 +501,7 @@ function createNativeInput(pane,phase="command",screen=""){
   const n={pane,phase,sent:"",screen,queue:Promise.resolve(),pending:0,failed:false,locked:false};nativeInputs.set(pane,n);return n;
 }
 function renderNativeMenu(){
-  const n=nativeInput(),visible=n&&!n.cancelRequested&&(n.failed||n.phase!=="params");
+  const n=nativeInput(),visible=n&&(n.failed||(!n.cancelRequested&&n.phase!=="params"));
   $("dock-input").readOnly=!!(n&&(n.locked||n.failed));
   $("native-menu-reset").hidden=!n?.failed;
   $("native-menu").hidden=!visible;
@@ -558,10 +558,11 @@ function mirrorNativeText(){
     n=createNativeInput(S.pane);renderNativeMenu();
   }
   if(!n||n.cancelRequested)return;
-  if(n.phase==="command"&&!text){n.cancelRequested=true;renderNativeMenu();}
+  const cancel=n.phase==="command"&&!text.startsWith("/");
+  if(cancel){n.cancelRequested=true;renderNativeMenu();}
   queueNative(n,async()=>{
-    await syncNativeText(n,text);
-    if(n.cancelRequested&&!text){
+    await syncNativeText(n,cancel?"":text);
+    if(cancel){
       nativeInputs.delete(n.pane);renderNativeMenu();
       if(S.pane===n.pane&&$("dock-input").value.startsWith("/"))mirrorNativeText();
       return;
@@ -598,7 +599,8 @@ function nativeKey(key){
   const n=nativeInput();if(!n)return false;
   if(n.failed||(n.locked&&!["up","down"].includes(key)))return true;
   const text=$("dock-input").value,transitionPending=n.locked;
-  if(["tab","enter","alt+enter","esc"].includes(key)){n.locked=true;renderNativeMenu();}
+  const ownsLock=["tab","enter","alt+enter","esc"].includes(key);
+  if(ownsLock){n.locked=true;renderNativeMenu();}
   queueNative(n,async()=>{
     if(!transitionPending)await syncNativeText(n,text);
     // Let bracketed paste settle before a dependent native completion/selection key.
@@ -627,7 +629,7 @@ function nativeKey(key){
       }else await readNative(n,true);
     }
     if(S.pane===n.pane)S.dockStick=true;
-    n.locked=false;
+    if(ownsLock)n.locked=false;
   });
   return true;
 }
