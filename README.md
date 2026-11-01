@@ -233,8 +233,10 @@ the same key to the agent; Enter executes its selection. Tab completes in the
 agent, copies the confirmed prefix into the composer, and leaves room for
 parameters. Enter then submits once, without retyping the prefix.
 
-Choose `/model` with Enter to open the agent's native model picker; Up/Down and
-Enter navigate and select there. This is single-pane native control, unrelated
+Choose `/model` with Enter to open the agent's native model picker. The WebUI
+shows selectable model rows from its live viewport: click/tap a row to select it,
+or use Up/Down and Enter even when the composer is not focused. Reopening the
+WebUI while the native model picker is open restores these controls. This is single-pane native control, unrelated
 to the simulated multi-agent Change model preview above. Commands and models
 remain runtime-specific; only the currently visible native page is shown.
 

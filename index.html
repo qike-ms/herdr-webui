@@ -136,6 +136,10 @@ main{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(
 .native-menu[hidden]{display:none}
 .native-menu header{padding:6px 12px;font:11px var(--mono);color:var(--cyan)}
 .native-menu pre{margin:0;padding:4px 12px 8px;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.45 var(--mono)}
+.native-models{display:grid;gap:4px;padding:4px 12px 8px}
+.native-models[hidden]{display:none}
+.native-models button{text-align:left;white-space:normal;overflow-wrap:anywhere;min-height:36px}
+.native-models button[aria-selected="true"]{border-color:var(--cyan);color:var(--cyan);background:#0f2630}
 select{background:var(--bg0);border:1px solid var(--line2);border-radius:8px;padding:7px 8px;font:12px var(--mono);outline:0}
 /* modal */
 .modal{position:fixed;inset:0;background:#000b;backdrop-filter:blur(3px);display:none;place-items:center;z-index:50}
@@ -337,6 +341,7 @@ select{background:var(--bg0);border:1px solid var(--line2);border-radius:8px;pad
         <section id="native-menu" class="native-menu" hidden aria-label="Live agent menu">
           <header id="native-menu-title">Agent commands · ↑ ↓ navigate · Enter select · Tab parameters</header>
           <pre id="native-menu-output" aria-live="polite"></pre>
+          <div id="native-models" class="native-models" role="listbox" aria-label="Agent models" hidden></div>
           <button id="native-menu-reset" class="btn" hidden>Reset after inspecting pane</button>
         </section>
         <form id="dock-form">
@@ -481,6 +486,20 @@ const stripAnsi = s => s.replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g,"").replace(
 
 /* ---------------- native agent menus ---------------- */
 function nativeInput(){return nativeInputs.get(S.pane);}
+function nativeModelRows(screen){
+  const lines=stripAnsi(screen).split("\n").slice(-45);
+  if(!lines.some(line=>/^\s*(?:Enter to select.*(?:Escape|Esc)|(?:Select|Choose) (?:a )?model\s*$)/i.test(line)))return null;
+  const selected=lines.findIndex(line=>/^\s*[→❯›>]\s+\S/.test(line));
+  if(selected<0)return null;
+  const row=line=>/^\s*(?:[→❯›>]\s+)?(?:✓\s+)?([\w][\w .:/()[\]·+-]*)\s*$/.exec(line);
+  let start=selected,end=selected;
+  while(start>0&&row(lines[start-1])&&lines[start-1].trim())start--;
+  while(end+1<lines.length&&row(lines[end+1])&&!/^\s*(?:\(\d+\/\d+\)|Model Name:|Enter to select)/i.test(lines[end+1]))end++;
+  return {rows:lines.slice(start,end+1).map(line=>row(line)[1].trim()),selected:selected-start};
+}
+function createNativeInput(pane,phase="command",screen=""){
+  const n={pane,phase,sent:"",screen,queue:Promise.resolve(),pending:0,failed:false,locked:false};nativeInputs.set(pane,n);return n;
+}
 function renderNativeMenu(){
   const n=nativeInput(),visible=n&&(n.failed||n.phase!=="params");
   $("dock-input").readOnly=!!(n&&(n.locked||n.failed));
@@ -490,6 +509,14 @@ function renderNativeMenu(){
   $("native-menu-title").textContent=n.failed?"Delivery uncertain · inspect the pane before retrying":n.phase==="model"?"Agent models · ↑ ↓ navigate · Enter select · Esc cancel":"Agent commands · ↑ ↓ navigate · Enter select · Tab parameters";
   // Render the native viewport, not an invented command/model catalogue.
   $("native-menu-output").innerHTML=n.screen?ansiToHtml(n.screen.split("\n").slice(-28).join("\n")):"Waiting for the agent menu…";
+  const models=n.phase==="model"&&nativeModelRows(n.screen),focused=document.activeElement?.dataset.nativeModel;
+  $("native-models").hidden=!models;
+  $("native-menu-output").hidden=!!models;
+  if(models){
+    $("native-models").innerHTML=models.rows.map((name,i)=>`<button type="button" class="btn" role="option" aria-selected="${i===models.selected}" data-native-model="${i}"${n.locked||n.failed?" disabled":""}>${i===models.selected?"→ ":""}${esc(name)}</button>`).join("");
+    if(focused!==undefined)$("native-models").querySelector(`[data-native-model="${models.selected}"]`)?.focus({preventScroll:true});
+    $("native-models").querySelector('[aria-selected="true"]')?.scrollIntoView({block:"nearest"});
+  }
 }
 function nativeEditor(screen){
   const rows=screen.split("\n");
@@ -512,7 +539,9 @@ async function readNative(n,settle=false){
   if(settle)await new Promise(resolve=>setTimeout(resolve,150));
   const d=await getJSON(`/api/read?pane=${encodeURIComponent(n.pane)}&source=visible&lines=80&ansi=1`);
   if(typeof d.text!=="string")throw new Error("Invalid agent menu response.");
-  n.screen=d.text;if(nativeInput()===n)renderNativeMenu();return d.text;
+  n.screen=d.text;
+  if(nativeModelRows(d.text)&&n.phase!=="model"){n.phase="model";n.sent="";updateNativeDraft(n,"");}
+  if(nativeInput()===n)renderNativeMenu();return d.text;
 }
 async function syncNativeText(n,text){
   if(text===n.sent)return;
@@ -526,7 +555,7 @@ async function syncNativeText(n,text){
 function mirrorNativeText(){
   const text=$("dock-input").value;let n=nativeInput();
   if(!n&&text.startsWith("/")&&getPane(S.pane)?.agent&&!submitBusy){
-    n={pane:S.pane,phase:"command",sent:"",screen:"",queue:Promise.resolve(),pending:0,failed:false,locked:false};nativeInputs.set(S.pane,n);renderNativeMenu();
+    n=createNativeInput(S.pane);renderNativeMenu();
   }
   if(!n)return;
   queueNative(n,async()=>{
@@ -539,6 +568,26 @@ function mirrorNativeText(){
 function updateNativeDraft(n,text){
   drafts.set(n.pane,{text,mode:drafts.get(n.pane)?.mode||"prompt"});
   if(S.pane===n.pane){$("dock-input").value=text;$("dock-input").style.height="auto";}
+}
+function selectNativeModel(index){
+  const n=nativeInput(),models=n&&nativeModelRows(n.screen),name=models?.rows[index];
+  if(!n||!name||n.locked||n.failed)return;
+  n.locked=true;renderNativeMenu();
+  queueNative(n,async()=>{
+    await readNative(n,true);
+    for(let moves=0;moves<=16;moves++){
+      const current=nativeModelRows(n.screen),target=current?.rows.indexOf(name);
+      if(!current||target<0)throw new Error("The model list changed; select again after inspecting the pane.");
+      if(target===current.selected){
+        await act("keys",{pane:n.pane,keys:["enter"]});await readNative(n,true);
+        if(nativeModelRows(n.screen))throw new Error("The agent did not confirm model selection; inspect the pane.");
+        nativeInputs.delete(n.pane);updateNativeDraft(n,"");renderNativeMenu();return;
+      }
+      if(moves===16)throw new Error("Could not confirm the native model selection.");
+      await act("keys",{pane:n.pane,keys:[target>current.selected?"down":"up"]});
+      await readNative(n,true);
+    }
+  });
 }
 function nativeKey(key){
   const n=nativeInput();if(!n)return false;
@@ -623,6 +672,12 @@ async function pollDock(){
   const id=S.pane,ansi=$("dock-ansi").checked;const txt=await readPane(id,{lines:400,ansi});if(txt===undefined||S.pane!==id||$("dock-ansi").checked!==ansi)return;
   const el=$("dock-term");const atBottom=el.scrollHeight-el.scrollTop-el.clientHeight<30;
   el.innerHTML=ansi?ansiToHtml(txt):esc(txt);if(atBottom||S.dockStick){el.scrollTop=el.scrollHeight;S.dockStick=false;}
+  if(!nativeInput()&&getPane(id)?.agent&&nativeModelRows(txt)){
+    try{
+      const visible=await getJSON(`/api/read?pane=${encodeURIComponent(id)}&source=visible&lines=80&ansi=1`);
+      if(S.pane===id&&!nativeInput()&&nativeModelRows(visible.text)){createNativeInput(id,"model",visible.text);$("dock-input").value="";renderNativeMenu();}
+    }catch(e){toast(e.message,"err");}
+  }
 }
 function layoutOf(tab){return S.tree?.layouts.find(l=>l.tab_id===tab);}
 
@@ -910,6 +965,7 @@ $("canvas").addEventListener("click",async e=>{
   if(e.target.closest("[data-close]")){await closePane(id);return;}
   openDock(id);
 });
+$("native-models").onclick=e=>{const b=e.target.closest("[data-native-model]");if(b)selectNativeModel(Number(b.dataset.nativeModel));};
 $("native-menu-reset").onclick=()=>{
   const n=nativeInput();if(!n?.failed||!confirm("Inspect and repair the input in the agent pane first. Reset browser mirroring without sending any keys?"))return;
   nativeInputs.delete(n.pane);updateNativeDraft(n,"");renderNativeMenu();
@@ -950,6 +1006,13 @@ $("filter").addEventListener("input",e=>{S.filter=e.target.value.trim().toLowerC
 $("btn-refresh").onclick=()=>refreshTree(true).then(pollPanes);
 $("btn-max").onclick=()=>$("body").classList.toggle("nosidebar");
 addEventListener("keydown",e=>{
+  const modelKey={ArrowUp:"up",ArrowDown:"down",Enter:"enter",Escape:"esc"}[e.key];
+  if(nativeInput()?.phase==="model"&&modelKey&&!e.isComposing&&!e.shiftKey&&!mobileView&&!$("spawn").classList.contains("open")){
+    e.preventDefault();
+    if(e.key==="Enter"&&e.target.dataset.nativeModel!==undefined)selectNativeModel(Number(e.target.dataset.nativeModel));
+    else nativeKey(modelKey);
+    return;
+  }
   if(phone.matches){
     if(e.key==="Escape"&&!$("spawn").classList.contains("open")){
       e.preventDefault();if(mobileView){const prior=mobileView;setMobileView(null);$(prior==="agents"?"mobile-agents":"mobile-menu").focus();}else{$("dock-input").blur();$("mobile-actions").hidden=true;}return;

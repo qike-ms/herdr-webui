@@ -95,6 +95,8 @@ class FixtureHandler(BaseHTTPRequestHandler):
                 else:
                     screen = text + "\nReady"
                 return self.reply({"text": screen})
+            if pane in self.server.model_panes:
+                return self.reply({"text": ">\n→ Model Alpha\n  Model Beta\nEnter to select · Escape to cancel"})
             return self.reply({"text": f"Terminal output for {pane}\n\x1b[32mReady\x1b[0m\n"})
         self.reply({"error": "not found"}, 404)
 
@@ -229,6 +231,31 @@ class PhoneUITest(unittest.TestCase):
         self.page.wait_for_function("!nativeInput()")
         self.assertEqual(self.page.locator("#dock-input").input_value(), "")
         self.assertFalse(self.httpd.model_panes)
+
+    def test_model_buttons_select_native_row_without_composer_focus(self):
+        self.open()
+        self.page.locator("#dock-input").fill("/model")
+        self.page.locator("#dock-input").press("Enter")
+        self.page.wait_for_function("nativeInput()?.phase === 'model' && nativeInput().pending === 0")
+        self.page.get_by_role("option", name="Model Beta").focus()
+        self.page.keyboard.press("ArrowDown")
+        self.page.wait_for_function("nativeInput().pending === 0")
+        self.assertEqual(self.page.get_by_role("option", name="→ Model Beta").get_attribute('aria-selected'), 'true')
+        self.page.get_by_role("option", name="Model Alpha").click()
+        self.page.wait_for_function("!nativeInput()")
+        self.assertEqual(self.httpd.actions[-2][1], {"pane": "p2", "keys": ["up"]})
+        self.assertEqual(self.httpd.actions[-1][1], {"pane": "p2", "keys": ["enter"]})
+
+    def test_open_model_picker_is_adopted_after_reload(self):
+        self.httpd.model_panes.add('p2')
+        self.open()
+        self.page.wait_for_function("nativeInput()?.phase === 'model'")
+        self.page.locator("#dock-input").blur()
+        self.page.keyboard.press("ArrowDown")
+        self.page.wait_for_function("nativeInput().pending === 0")
+        self.assertTrue(self.page.get_by_role('option', name='→ Model Beta').is_visible())
+        self.page.keyboard.press("Enter")
+        self.page.wait_for_function("!nativeInput()")
 
     def test_model_picker_from_tab_completed_command(self):
         self.open()
