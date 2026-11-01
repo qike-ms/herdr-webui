@@ -591,6 +591,9 @@ function updateNativeDraft(n,text){
   drafts.set(n.pane,{text,mode:drafts.get(n.pane)?.mode||"prompt"});
   if(S.pane===n.pane){$("dock-input").value=text;$("dock-input").style.height="auto";}
 }
+function finishNative(n){
+  nativeInputs.delete(n.pane);updateNativeDraft(n,n.savedDraft??"");renderNativeMenu();
+}
 function selectNativeModel(index){
   const n=nativeInput(),models=n&&nativeModelRows(n.screen),name=models?.rows[index];
   if(!n||!name||n.locked||n.failed)return;
@@ -603,7 +606,7 @@ function selectNativeModel(index){
       if(target===current.selected){
         await act("keys",{pane:n.pane,keys:["enter"]});await readNative(n,true);
         if(nativeModelRows(n.screen))throw new Error("The agent did not confirm model selection; inspect the pane.");
-        nativeInputs.delete(n.pane);updateNativeDraft(n,"");renderNativeMenu();return;
+        finishNative(n);return;
       }
       if(moves===16)throw new Error("Could not confirm the native model selection.");
       await act("keys",{pane:n.pane,keys:[target>current.selected?"down":"up"]});
@@ -658,7 +661,13 @@ function nativeKey(key,n=nativeInput()){
       await act("keys",{pane:n.pane,keys:[key]});
       if(key==="enter"||key==="alt+enter"||key==="esc"){
         if(key==="enter"&&model){n.phase="model";n.sent="";updateNativeDraft(n,"");await readNative(n,true);}
-        else{nativeInputs.delete(n.pane);updateNativeDraft(n,"");if(S.pane===n.pane)renderNativeMenu();}
+        else{
+          if(key==="enter"&&n.phase==="model"){
+            await readNative(n,true);
+            if(nativeModelRows(n.screen))throw new Error("The agent did not confirm model selection; inspect the pane.");
+          }
+          finishNative(n);
+        }
       }else await readNative(n,true);
     }
     if(S.pane===n.pane)S.dockStick=true;
@@ -715,7 +724,9 @@ async function pollDock(){
   if(!nativeInput()&&getPane(id)?.agent&&nativeModelRows(txt)){
     try{
       const visible=await getJSON(`/api/read?pane=${encodeURIComponent(id)}&source=visible&lines=80&ansi=1`);
-      if(S.pane===id&&!nativeInput()&&nativeModelRows(visible.text)){createNativeInput(id,"model",visible.text);$("dock-input").value="";renderNativeMenu();}
+      if(S.pane===id&&!nativeInput()&&nativeModelRows(visible.text)){
+        const n=createNativeInput(id,"model",visible.text);n.savedDraft=$("dock-input").value;$("dock-input").value="";renderNativeMenu();
+      }
     }catch(e){toast(e.message,"err");}
   }
 }
@@ -1042,7 +1053,9 @@ async function submitDraft(mode){
       if(text.startsWith("/")&&getPane(pane)?.agent){
         const n=nativeInputs.get(pane)||createNativeInput(pane);
         queueNative(n,async()=>{await syncNativeText(n,text);await readNative(n,true);});
-        nativeKey(mode==="followup"?"alt+enter":"enter",n);return;
+        nativeKey(mode==="followup"?"alt+enter":"enter",n);
+        await n.queue;if(n.failed)throw new Error("Native submission could not be confirmed; inspect the pane.");
+        confirmed=true;return;
       }
     }
     if(mode==="prompt"||mode==="followup")await act(mode,{pane,text});
