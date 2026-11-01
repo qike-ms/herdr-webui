@@ -409,6 +409,13 @@ const closingPanes = new Set();
 const nativeInputs = new Map();
 const deferredSlashes = new Map();
 const submittingSlashes = new Set();
+const rawPaneActions = new Map();
+function rawPaneAct(name,body){
+  const previous=rawPaneActions.get(body.pane)||Promise.resolve();
+  const operation=previous.then(()=>act(name,body));rawPaneActions.set(body.pane,operation);
+  operation.finally(()=>{if(rawPaneActions.get(body.pane)===operation)rawPaneActions.delete(body.pane);}).catch(()=>{});
+  return operation;
+}
 let interruptBusy = false, submitBusy = false;
 
 /* ---------------- utils ---------------- */
@@ -500,7 +507,7 @@ function nativeModelRows(screen){
   return {rows:lines.slice(start,end+1).map(line=>row(line)[1].trim()),selected:selected-start};
 }
 function createNativeInput(pane,phase="command",screen=""){
-  const n={pane,phase,sent:"",screen,queue:Promise.resolve(),pending:0,failed:false,locked:false};nativeInputs.set(pane,n);return n;
+  const n={pane,phase,sent:"",screen,queue:rawPaneActions.get(pane)||Promise.resolve(),pending:0,failed:false,locked:false};nativeInputs.set(pane,n);return n;
 }
 function renderNativeMenu(){
   const n=nativeInput(),visible=n&&(n.failed||(!n.cancelRequested&&n.phase!=="params"));
@@ -865,7 +872,7 @@ async function closePane(id){
 async function interruptTwice(){
   const pane=S.pane;if(!pane||interruptBusy||nativeInput())return;
   interruptBusy=true;$("mobile-interrupt").disabled=true;document.querySelector("[data-interrupt-twice]").disabled=true;
-  try{await act("keys",{pane,keys:["ctrl+c","ctrl+c"]});toast("Sent Ctrl-C twice; pane kept open");if(S.pane===pane)S.dockStick=true;setTimeout(pollDock,250);setTimeout(refreshTree,600);}
+  try{await rawPaneAct("keys",{pane,keys:["ctrl+c","ctrl+c"]});toast("Sent Ctrl-C twice; pane kept open");if(S.pane===pane)S.dockStick=true;setTimeout(pollDock,250);setTimeout(refreshTree,600);}
   catch(e){toast(e.message,"err");}
   finally{interruptBusy=false;$("mobile-interrupt").disabled=!getPane(S.pane);document.querySelector("[data-interrupt-twice]").disabled=false;}
 }
@@ -1012,7 +1019,7 @@ $("dock-keys").addEventListener("click",async e=>{const twice=e.target.closest("
 const pane=S.pane,cancelling=nativeInput();
 try{if(cancelling){await cancelling.queue;if(cancelling.failed)throw new Error("Could not confirm slash cancellation; inspect the pane.");}
 const owner=nativeInputs.get(pane);if(owner){nativeKeypad(owner,b.dataset.key);return;}
-await act("keys",{pane,keys:[b.dataset.key]});S.dockStick=true;setTimeout(pollDock,250);}catch(x){toast(x.message,"err");}});
+await rawPaneAct("keys",{pane,keys:[b.dataset.key]});S.dockStick=true;setTimeout(pollDock,250);}catch(x){toast(x.message,"err");}});
 $("dock-input").addEventListener("keydown",e=>{
   if(e.isComposing)return;
   const key=e.key==="Enter"&&e.altKey?"alt+enter":{ArrowUp:"up",ArrowDown:"down",Tab:"tab",Enter:"enter",Escape:"esc"}[e.key];

@@ -531,6 +531,16 @@ class PhoneUITest(unittest.TestCase):
         self.assertEqual(self.page.locator('#dock-input').input_value(),'y')
         self.assertEqual(self.httpd.native_text['p2'],'')
 
+    def test_native_slash_waits_for_pending_raw_key(self):
+        self.open()
+        self.httpd.delay_action = True
+        self.page.locator('[data-key="enter"]').click()
+        self.assertTrue(self.httpd.action_started.wait(2))
+        self.page.locator('#dock-input').fill('/model')
+        self.httpd.delay_action = False;self.httpd.action_release.set()
+        self.page.wait_for_function('nativeInput()?.pending === 0')
+        self.assertEqual([(a[0].split('/')[-1],a[1].get('text',a[1].get('keys'))) for a in self.httpd.actions], [('keys',['enter']),('send','/model')])
+
     def test_native_parameter_alt_enter_keyboard_and_button(self):
         self.open()
         for keyboard in (True, False):
