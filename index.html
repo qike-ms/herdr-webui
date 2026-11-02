@@ -420,9 +420,11 @@ const deferredSlashes = new Map();
 const submittingSlashes = new Set();
 const rawPaneActions = new Map();
 const hostNativeInputs = new Map();
+// Pane discovery may prune an input while its queue is still awaiting a response.
+const pendingNativeInputs = new Set();
 function rawPaneAct(name,body){
-  const previous=rawPaneActions.get(body.pane)||Promise.resolve();
-  const operation=previous.then(()=>act(name,body));rawPaneActions.set(body.pane,operation);
+  const machine=S.machine,previous=rawPaneActions.get(body.pane)||Promise.resolve();
+  const operation=previous.then(()=>act(name,body,machine));rawPaneActions.set(body.pane,operation);
   operation.finally(()=>{if(rawPaneActions.get(body.pane)===operation)rawPaneActions.delete(body.pane);}).catch(()=>{});
   return operation;
 }
@@ -446,7 +448,7 @@ async function refreshMachines(){
 }
 function switchMachine(machine){
   if(machine===S.machine)return;
-  if(activeActions||submitBusy||interruptBusy||closingPanes.size||rawPaneActions.size||[...nativeInputs.values()].some(n=>n.pending)){renderSide();toast("Wait for the current action before switching hosts.","err");return;}
+  if(activeActions||submitBusy||interruptBusy||closingPanes.size||rawPaneActions.size||pendingNativeInputs.size){renderSide();toast("Wait for the current action before switching hosts.","err");return;}
   saveDraft();hostSelections.set(S.machine,{ws:S.ws,tab:S.tab,pane:S.pane,open:S.open});
   hostNativeInputs.set(S.machine,nativeInputs);
   nativeInputs=hostNativeInputs.get(machine)||new Map();
@@ -484,8 +486,8 @@ async function refreshCSRF(){
   })().catch(e=>{reportWebUIError("csrf_refresh_failed");throw e;}).finally(()=>{csrfRefresh=null;});
   return csrfRefresh;
 }
-async function act(name, body){
-  const payload=JSON.stringify(S.machine==="local"?body:{...body,machine:S.machine});
+async function act(name, body, machine=S.machine){
+  const payload=JSON.stringify(machine==="local"?body:{...body,machine});
   activeActions++;renderSide();
   try{
   for(let attempt=0;attempt<2;attempt++){
@@ -549,7 +551,8 @@ function nativeModelRows(screen){
   return {rows:lines.slice(start,end+1).map(line=>row(line)[1].trim()),selected:selected-start};
 }
 function createNativeInput(pane,phase="command",screen=""){
-  const n={pane,phase,sent:"",screen,queue:rawPaneActions.get(pane)||Promise.resolve(),pending:0,failed:false,locked:false};nativeInputs.set(pane,n);return n;
+  const n={pane,phase,sent:"",screen,queue:rawPaneActions.get(pane)||Promise.resolve(),pending:0,failed:false,locked:false};
+  Object.defineProperty(n,"machine",{value:S.machine});nativeInputs.set(pane,n);return n;
 }
 function renderNativeMenu(){
   const n=nativeInput(),visible=n&&(n.failed||(!n.cancelRequested&&n.phase!=="params"));
@@ -582,16 +585,28 @@ function nativeEditor(screen){
   }
   return null;
 }
+function ownsNativeInput(n){return S.machine===n.machine&&nativeInputs.get(n.pane)===n;}
+function checkNativeOwner(n){
+  if(!ownsNativeInput(n))throw new DOMException("Native input is no longer active.","AbortError");
+}
+async function nativeAct(n,name,body){
+  checkNativeOwner(n);
+  const result=await act(name,{...body,pane:n.pane},n.machine);
+  checkNativeOwner(n);return result;
+}
 function queueNative(n,work){
-  n.pending++;
-  n.queue=n.queue.then(async()=>{if(n.failed||nativeInputs.get(n.pane)!==n)return;await work();}).catch(e=>{
+  n.pending++;pendingNativeInputs.add(n);renderSide();
+  n.queue=n.queue.then(async()=>{if(n.failed||!ownsNativeInput(n))return;await work();}).catch(e=>{
+    if(e.name==="AbortError")return;
     n.failed=true;toast(`${e.message} Input may already be in the pane; inspect it before retrying.`,"err");
-  }).finally(()=>{n.pending--;if(nativeInput()===n)renderNativeMenu();});
+  }).finally(()=>{if(--n.pending===0){pendingNativeInputs.delete(n);renderSide();}if(nativeInput()===n)renderNativeMenu();});
   return n.queue;
 }
 async function readNative(n,settle=false){
   if(settle)await new Promise(resolve=>setTimeout(resolve,150));
-  const d=await getJSON(machineURL(`/api/read?pane=${encodeURIComponent(n.pane)}&source=visible&lines=80&ansi=1`));
+  checkNativeOwner(n);
+  const d=await getJSON(machineURL(`/api/read?pane=${encodeURIComponent(n.pane)}&source=visible&lines=80&ansi=1`,n.machine));
+  checkNativeOwner(n);
   if(typeof d.text!=="string")throw new Error("Invalid agent menu response.");
   n.screen=d.text;
   if(nativeModelRows(d.text)&&n.phase!=="model"){n.phase="model";n.sent="";updateNativeDraft(n,"");}
@@ -602,8 +617,8 @@ async function syncNativeText(n,text){
   // Only replace the suffix we own; never clear unrelated terminal input.
   const old=Array.from(n.sent),next=Array.from(text);let common=0;
   while(common<old.length&&common<next.length&&old[common]===next[common])common++;
-  for(let left=old.length-common;left>0;left-=16)await act("keys",{pane:n.pane,keys:Array(Math.min(left,16)).fill("backspace")});
-  const suffix=next.slice(common).join("");if(suffix)await act("send",{pane:n.pane,text:suffix,enter:false});
+  for(let left=old.length-common;left>0;left-=16)await nativeAct(n,"keys",{keys:Array(Math.min(left,16)).fill("backspace")});
+  const suffix=next.slice(common).join("");if(suffix)await nativeAct(n,"send",{text:suffix,enter:false});
   n.sent=text;
 }
 function mirrorNativeText(owner=nativeInput()){
@@ -630,8 +645,9 @@ function mirrorNativeText(owner=nativeInput()){
   });
 }
 function updateNativeDraft(n,text){
-  drafts.set(draftKey(n.pane),{text,mode:drafts.get(draftKey(n.pane))?.mode||"prompt"});
-  if(S.pane===n.pane){$("dock-input").value=text;$("dock-input").style.height="auto";}
+  const key=draftKey(n.pane,n.machine);
+  drafts.set(key,{text,mode:drafts.get(key)?.mode||"prompt"});
+  if(S.machine===n.machine&&S.pane===n.pane){$("dock-input").value=text;$("dock-input").style.height="auto";}
 }
 function finishNative(n){
   nativeInputs.delete(n.pane);updateNativeDraft(n,n.savedDraft??"");renderNativeMenu();
@@ -646,12 +662,12 @@ function selectNativeModel(index){
       const current=nativeModelRows(n.screen),target=current?.rows.indexOf(name);
       if(!current||target<0)throw new Error("The model list changed; select again after inspecting the pane.");
       if(target===current.selected){
-        await act("keys",{pane:n.pane,keys:["enter"]});await readNative(n,true);
+        await nativeAct(n,"keys",{keys:["enter"]});await readNative(n,true);
         if(nativeModelRows(n.screen))throw new Error("The agent did not confirm model selection; inspect the pane.");
         finishNative(n);return;
       }
       if(moves===16)throw new Error("Could not confirm the native model selection.");
-      await act("keys",{pane:n.pane,keys:[target>current.selected?"down":"up"]});
+      await nativeAct(n,"keys",{keys:[target>current.selected?"down":"up"]});
       await readNative(n,true);
     }
   });
@@ -684,7 +700,7 @@ function nativeKey(key,n=nativeInput()){
     // Let bracketed paste settle before a dependent native completion/selection key.
     await readNative(n,true);
     if(key==="tab"&&n.phase!=="model"){
-      await act("keys",{pane:n.pane,keys:["tab"]});
+      await nativeAct(n,"keys",{keys:["tab"]});
       // Tab changes the editor in the agent. Wait for its actual completed prefix.
       const deadline=Date.now()+2500;let completed=null;
       do{
@@ -694,13 +710,13 @@ function nativeKey(key,n=nativeInput()){
       }while(Date.now()<deadline);
       if(!completed||(completed===n.sent&&/^\s*[→❯›>]\s*\S/m.test(stripAnsi(n.screen))))throw new Error("Could not confirm native completion.");
       n.sent=completed;
-      if(!n.sent.endsWith(" ")){await act("send",{pane:n.pane,text:" ",enter:false});n.sent+=" ";}
+      if(!n.sent.endsWith(" ")){await nativeAct(n,"send",{text:" ",enter:false});n.sent+=" ";}
       n.phase="params";
       if(S.pane!==n.pane||$("dock-input").value===text)updateNativeDraft(n,n.sent);
     }else{
       const model=n.phase!=="model"&&(n.sent.trim()==="/model"||(n.phase==="command"&&/^\s*[→❯›>]\s*\/?model\b/m.test(stripAnsi(n.screen))));
       if(key==="esc")await syncNativeText(n,"");
-      await act("keys",{pane:n.pane,keys:[key]});
+      await nativeAct(n,"keys",{keys:[key]});
       if(key==="enter"||key==="alt+enter"||key==="esc"){
         if(key==="enter"&&model){n.phase="model";n.sent="";updateNativeDraft(n,"");await readNative(n,true);}
         else{
@@ -863,7 +879,7 @@ function renderSide(){
   if(!items.some(m=>m.id===S.machine))items.push({id:S.machine,label:"Unavailable host",enabled:false});
   el.innerHTML=items.map(m=>{
     const selected=m.id===S.machine,state=selected?(online?"online":S.err?"offline":"unknown"):"unknown";
-    const host=`<button type="button" class="node host ${selected?"active open":""}" data-machine="${esc(m.id)}" aria-label="Select host ${esc(m.label)}" aria-expanded="${selected}"${selected?' aria-current="true"':""}${!m.enabled||activeActions>0?" disabled":""}><span class="chev">›</span>${ICON.host}<span class="name">${esc(m.label)}</span><span class="meta">${m.id==="local"?"local":"remote"}${m.enabled?"":" / disabled"}</span><span class="dot s-${state}"></span></button>`;
+    const host=`<button type="button" class="node host ${selected?"active open":""}" data-machine="${esc(m.id)}" aria-label="Select host ${esc(m.label)}" aria-expanded="${selected}"${selected?' aria-current="true"':""}${!m.enabled||activeActions>0||pendingNativeInputs.size?" disabled":""}><span class="chev">›</span>${ICON.host}<span class="name">${esc(m.label)}</span><span class="meta">${m.id==="local"?"local":"remote"}${m.enabled?"":" / disabled"}</span><span class="dot s-${state}"></span></button>`;
     const children=t?h:`<div class="hint" style="padding:10px">${S.err?"Waiting for Herdr. Select another host or retry the connection.":"Loading…"}</div>`;
     return host+(selected?`<div class="kids" data-machine-children="${esc(m.id)}">${children}</div>`:"");
   }).join("");

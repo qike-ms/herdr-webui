@@ -441,6 +441,60 @@ class PhoneUITest(unittest.TestCase):
         self.assertEqual(self.page.locator('#dock-input').input_value(), '/help local')
         self.assertEqual(self.page.evaluate('nativeInput().sent'), '/help local')
 
+    def check_removed_pane_during_native_read(self, origin, destination, key="Enter"):
+        self.open("#pane=p2" if origin == "local" else f"#machine={origin}&pane=p2")
+        self.page.locator("#dock-input").fill("/help")
+        self.page.wait_for_function("nativeInput()?.pending === 0")
+        self.page.evaluate("window.pendingNativeTest = nativeInput()")
+        held_reads = []
+
+        def hold_visible_read(route):
+            query = parse_qs(urlparse(route.request.url).query)
+            if query.get("source") == ["visible"] and query.get("machine", ["local"]) == [origin] and not held_reads:
+                held_reads.append(route)
+            else:
+                route.continue_()
+
+        self.page.route(self.base + "/api/read*", hold_visible_read)
+        with self.page.expect_request(lambda r: parse_qs(urlparse(r.url).query).get("source") == ["visible"]):
+            self.page.locator("#dock-input").press(key)
+        self.page.wait_for_function("window.pendingNativeTest.pending > 0 && activeActions === 0")
+        self.assertEqual(len(held_reads), 1)
+
+        # Only the originating host loses p2; the other host retains the same ID.
+        pruned_tree = copy.deepcopy(TREE)
+        pruned_tree["panes"] = [p for p in pruned_tree["panes"] if p["pane_id"] != "p2"]
+        self.page.route(self.base + "/api/tree" + ("" if origin == "local" else f"?machine={origin}"),
+                        lambda route: route.fulfill(json=pruned_tree))
+        self.page.wait_for_function("!S.busy")
+        self.page.evaluate("refreshTree()")
+        self.assertTrue(self.page.evaluate("!nativeInputs.has('p2')"))
+        self.assertGreater(self.page.evaluate("window.pendingNativeTest.pending"), 0)
+        self.assertTrue(self.page.locator(f'[data-machine="{destination}"]').is_disabled())
+        switched_while_pending = self.page.evaluate("host => { switchMachine(host); return S.machine; }", destination)
+
+        held_reads[0].fulfill(json={"text": "/help\n→ help    Show help\n  model   Select model"})
+        self.page.evaluate("window.pendingNativeTest.queue")
+        self.assertEqual(self.page.evaluate("window.pendingNativeTest.pending"), 0)
+        self.assertFalse(self.page.evaluate("pendingNativeInputs.has(window.pendingNativeTest)"))
+        self.assertFalse(self.page.locator(f'[data-machine="{destination}"]').is_disabled())
+        self.page.evaluate("switchMachine", destination)
+        self.page.wait_for_function("host => S.machine === host && S.pane === 'p2'", arg=destination)
+
+        self.assertFalse(any(a[1].get("machine", "local") == destination for a in self.httpd.actions),
+                         "A native operation from a removed pane must never mutate the other host")
+        self.assertEqual(switched_while_pending, origin, "Pruning a pane must not drop its in-flight switch guard")
+        self.assertEqual(len(self.httpd.actions), 1, "A removed native input must not send its pending key")
+
+    def test_removed_local_pane_cannot_redirect_pending_native_enter(self):
+        self.check_removed_pane_during_native_read("local", "worker-a")
+
+    def test_removed_remote_pane_cannot_redirect_pending_native_enter(self):
+        self.check_removed_pane_during_native_read("worker-a", "local")
+
+    def test_removed_pane_cannot_send_pending_native_completion(self):
+        self.check_removed_pane_during_native_read("local", "worker-a", key="Tab")
+
     def test_native_keypad_edits_stay_in_owned_browser_draft(self):
         self.open()
         self.page.locator('#dock-input').fill('/')
@@ -1871,7 +1925,7 @@ class RealBridgeUITest(unittest.TestCase):
             threading.Thread(target=httpd.serve_forever, daemon=True).start()
             try:
                 with sync_playwright() as playwright:
-                    browser = playwright.chromium.launch(channel="chrome", headless=True)
+                    browser = playwright.chromium.launch(channel=os.environ.get("HERDR_WEBUI_BROWSER", "chrome"), headless=True)
                     try:
                         page = browser.new_page(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True)
                         page.goto(f"http://127.0.0.1:{httpd.server_port}/")
