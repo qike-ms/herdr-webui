@@ -240,6 +240,19 @@ class ServerTest(unittest.TestCase):
         self.assertNotIn(b"/secret/session.jsonl", body)
         self.assertEqual(tree["focused"]["pane"], "w1:p1")
 
+    def test_read_reports_line_and_character_limits(self):
+        from unittest.mock import patch
+        body = json.loads(self.req("/api/read?pane=w1:p1&lines=5000")[1])
+        self.assertEqual(self.calls()[-1][-3], "2000")
+        self.assertEqual((body["lines"], body["max_lines"], body["line_limited"], body["char_limited"]), (2000, 2000, True, False))
+        body = json.loads(self.req("/api/read?pane=w1:p1&lines=800")[1])
+        self.assertEqual((body["lines"], body["line_limited"]), (800, False))
+        with patch.object(server, "MAX_READ", 8):
+            body = json.loads(self.req("/api/read?pane=w1:p1")[1])
+        self.assertTrue(body["char_limited"])
+        self.assertLessEqual(len(body["text"]), 8)
+        self.assertNotIn("hello", body["text"])  # The cut-off partial line is omitted.
+
     def test_read_passes_argv_and_rejects_bad_ids(self):
         status, body = self.req("/api/read?pane=w1:p1&lines=50&ansi=1")
         self.assertEqual(status, 200)

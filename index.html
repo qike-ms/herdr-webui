@@ -276,6 +276,9 @@ select{background:var(--bg0);border:1px solid var(--line2);border-radius:8px;pad
 </style>
 <style>
 #machine-error{padding:0 16px 8px;color:var(--red);font-size:12px}
+.history-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 12px;border-bottom:1px solid var(--line);font-size:11px;color:var(--fg3);flex:none}
+.history-bar .btn{min-height:28px}
+#dock-term{overflow-anchor:none}
 .short-phone .side-h{justify-content:flex-end}
 .short-phone .side-h h3,.short-phone #active-pill{display:none}
 </style>
@@ -345,6 +348,7 @@ select{background:var(--bg0);border:1px solid var(--line2);border-radius:8px;pad
           <button class="btn" id="dock-focus" title="Focus this pane in the Herdr TUI">Focus in Herdr</button>
           <button class="btn" id="dock-close" title="Return to pane overview without stopping the terminal (Esc)" aria-label="Return to pane overview">Overview</button>
         </div>
+        <div class="history-bar" id="dock-history"><button type="button" class="btn" id="dock-older" disabled>Load older output</button><span id="dock-history-status" role="status" aria-live="polite"></span><button type="button" class="btn" id="dock-history-apply" hidden>Show changed snapshot</button><button type="button" class="btn cy" id="dock-latest" hidden>Jump to latest</button></div>
         <div class="term" id="dock-term"></div>
         <div class="keys" id="dock-keys"></div>
         <section id="native-menu" class="native-menu" hidden aria-label="Live agent menu">
@@ -454,7 +458,7 @@ function switchMachine(machine){
   nativeInputs=hostNativeInputs.get(machine)||new Map();
   const saved=hostSelections.get(machine);
   S.machine=machine;S.epoch++;S.busy=false;S.tree=null;S.err=null;S.ws=saved?.ws||null;S.tab=saved?.tab||null;S.resumePane=saved?.pane||null;S.pane=null;S.open=saved?.open||new Set();S.outputs.clear();S.dockStick=true;
-  mobileSelected=false;agentStateFilter=null;loop.done=1;
+  mobileSelected=false;agentStateFilter=null;loop.done=1;resetHistory();
   $("dock").classList.remove("open");$("dock-term").textContent="";$("dock-input").value="";$("canvas").innerHTML="";delete $("canvas").dataset.sig;closeSpawn();
   history.replaceState(null,"",selectionHash(S.resumePane));render();refreshTree().then(pollPanes);
 }
@@ -784,9 +788,14 @@ async function pollPanes(){
 async function pollDock(){
   if(!S.pane||document.hidden)return;
   const n=nativeInput();if(n&&!n.failed&&!n.pending)queueNative(n,()=>readNative(n));
-  const epoch=S.epoch,machine=S.machine,id=S.pane,ansi=$("dock-ansi").checked;const txt=await readPane(id,{lines:400,ansi});if(txt===undefined||epoch!==S.epoch||S.pane!==id||$("dock-ansi").checked!==ansi)return;
+  const epoch=S.epoch,machine=S.machine,id=S.pane,ansi=$("dock-ansi").checked,gen=H.gen;const txt=await readPane(id,{lines:LIVE_LINES,ansi});if(txt===undefined||epoch!==S.epoch||S.pane!==id||gen!==H.gen||$("dock-ansi").checked!==ansi)return;
+  H.latest=txt;
+  if(H.mode==="history"){if(txt!==H.tail)$("dock-latest").textContent="New output · Jump to latest";}
+  else{
+  H.live=txt;$("dock-older").disabled=H.loading;
   const el=$("dock-term");const atBottom=el.scrollHeight-el.scrollTop-el.clientHeight<30;
   el.innerHTML=ansi?ansiToHtml(txt):esc(txt);if(atBottom||S.dockStick){el.scrollTop=el.scrollHeight;S.dockStick=false;}
+  }
   if(!nativeInput()&&getPane(id)?.agent&&nativeModelRows(txt)){
     try{
       const visible=await getJSON(machineURL(`/api/read?pane=${encodeURIComponent(id)}&source=visible&lines=80&ansi=1`,machine));
@@ -797,6 +806,82 @@ async function pollDock(){
   }
 }
 function layoutOf(tab){return S.tree?.layouts.find(l=>l.tab_id===tab);}
+
+/* ---------------- on-demand scrollback ----------------
+   Herdr exposes only "last N lines now" snapshots, not a history cursor. Each
+   load replaces the view with one complete, larger snapshot; snapshots are never
+   stitched or deduplicated. The reader's position is kept only when the previous
+   view occurs exactly once in the new snapshot; otherwise the old view stays. */
+const LIVE_LINES=400;
+const H={gen:0,mode:"live",lines:LIVE_LINES,raw:"",tail:null,latest:null,live:null,loading:false,candidate:null,done:false};
+function resetHistory(){
+  Object.assign(H,{gen:H.gen+1,mode:"live",lines:LIVE_LINES,raw:"",tail:null,latest:null,live:null,loading:false,candidate:null,done:false});
+  $("dock-older").disabled=true;$("dock-older").textContent="Load older output";$("dock-older").removeAttribute("aria-busy");
+  $("dock-history-status").textContent="";$("dock-latest").hidden=$("dock-history-apply").hidden=true;
+}
+const plainLines=raw=>stripAnsi(raw).split("\n");
+// Line index where `prev` appears exactly once in `next`, trying a few trailing lines
+// shorter for status lines that were redrawn. Null means the position cannot be mapped.
+function historyAnchor(prev,next){
+  const old=plainLines(prev),hay="\n"+plainLines(next).join("\n")+"\n";
+  for(let drop=0;drop<=Math.min(20,old.length-1);drop++){
+    const block="\n"+old.slice(0,old.length-drop).join("\n")+"\n";
+    if(block.trim()==="")break; // Blank-only blocks match too loosely to anchor.
+    const at=hay.indexOf(block);
+    if(at<0)continue;
+    if(hay.indexOf(block,at+1)>=0)return null;
+    return hay.slice(0,at).split("\n").length-1;
+  }
+  return null;
+}
+function renderHistory(raw,anchorLine=null){
+  const el=$("dock-term"),ansi=$("dock-ansi").checked,lines=raw.split("\n");
+  const fmt=s=>ansi?ansiToHtml(s):esc(stripAnsi(s));
+  el.innerHTML=anchorLine===null?fmt(raw):fmt(lines.slice(0,anchorLine).join("\n")+(anchorLine?"\n":""))+'<span data-history-anchor></span>'+fmt(lines.slice(anchorLine).join("\n"));
+}
+function showHistory(raw,{anchorLine=null,prevTop=0}={}){
+  const el=$("dock-term");H.mode="history";H.raw=raw;H.tail=H.latest;
+  renderHistory(raw,anchorLine);
+  const marker=el.querySelector("[data-history-anchor]");
+  if(marker){const pad=parseFloat(getComputedStyle(el).paddingTop)||0;el.scrollTop=prevTop+marker.getBoundingClientRect().top-el.getBoundingClientRect().top+el.scrollTop-pad;}
+  else el.scrollTop=0;
+  $("dock-latest").hidden=false;$("dock-latest").textContent="Jump to latest";
+}
+async function loadOlder(){
+  if(H.loading||H.done||!S.pane||(H.mode==="history"?H.raw:H.live)===null)return;
+  const next=Math.min(H.lines*2,2000),gen=H.gen,machine=S.machine,id=S.pane,el=$("dock-term"),btn=$("dock-older");
+  H.loading=true;btn.disabled=true;btn.setAttribute("aria-busy","true");btn.textContent="Loading older output…";
+  $("dock-history-status").textContent="";
+  let d=null,error=null;
+  try{d=await getJSON(machineURL(`/api/read?pane=${encodeURIComponent(id)}&lines=${next}&ansi=1`,machine));if(typeof d.text!=="string")throw new Error("The server response was invalid.");}
+  catch(e){error=e;}
+  if(gen!==H.gen||machine!==S.machine||id!==S.pane)return; // Selection changed; discard.
+  H.loading=false;btn.removeAttribute("aria-busy");btn.textContent="Load older output";
+  if(error){reportWebUIError("ui_error","/api/read");$("dock-history-status").textContent=`Could not load older output: ${error.message}`;btn.textContent="Retry loading older output";btn.disabled=false;return;}
+  const base=H.mode==="history"?H.raw:H.live,prevTop=el.scrollTop,anchor=historyAnchor(base,d.text);
+  H.lines=d.lines||next;
+  let status;
+  if(d.char_limited){H.done=true;status="Response size limit reached; older output may exist but cannot be loaded here.";}
+  else if(anchor===0){H.done=true;status="No older output is retained by Herdr for this pane.";}
+  else if(H.lines>=(d.max_lines||2000)){H.done=true;status=`Showing the ${H.lines.toLocaleString()}-line limit; older output may exist.`;}
+  else status=`Showing up to ${H.lines.toLocaleString()} recent lines.`;
+  btn.disabled=H.done;
+  if(anchor===null){
+    H.candidate=d.text;H.done=false;btn.disabled=true;$("dock-history-apply").hidden=false;
+    status="The output changed while loading, so your place cannot be kept. Current view kept.";
+  }else showHistory(d.text,{anchorLine:anchor,prevTop});
+  $("dock-history-status").textContent=status;
+}
+$("dock-older").onclick=loadOlder;
+$("dock-history-apply").onclick=()=>{
+  if(H.candidate===null)return;const raw=H.candidate;H.candidate=null;$("dock-history-apply").hidden=true;
+  showHistory(raw);$("dock-older").disabled=H.done;$("dock-history-status").textContent="Showing the changed snapshot from its oldest line.";
+};
+$("dock-latest").onclick=()=>{
+  const latest=H.latest;resetHistory();H.live=latest;S.dockStick=true;
+  if(latest!==null){const el=$("dock-term");el.innerHTML=$("dock-ansi").checked?ansiToHtml(latest):esc(stripAnsi(latest));el.scrollTop=el.scrollHeight;$("dock-older").disabled=false;}
+  pollDock();
+};
 
 /* ---------------- filter ---------------- */
 function matches(...vals){const q=S.filter;return !q||vals.some(v=>String(v??"").toLowerCase().includes(q));}
@@ -951,7 +1036,7 @@ function openDock(id,{autofocus=true}={}){
   const p=getPane(id);if(!p)return;
   if(S.tab!==p.tab_id){S.ws=p.workspace_id;S.tab=p.tab_id;S.open.add(p.workspace_id);}
   if(S.pane!==id){
-    saveDraft();S.pane=id;S.dockStick=true;$("dock-term").innerHTML='<span class="dim">reading terminal…</span>';
+    saveDraft();S.pane=id;S.dockStick=true;resetHistory();$("dock-term").innerHTML='<span class="dim">reading terminal…</span>';
     const draft=drafts.get(draftKey(id));$("dock-input").value=draft?.text||"";$("dock-input").style.height="auto";$("dock-mode").value=draft?.mode||defaultInputMode(p);
   }
   if(phone.matches){mobileSelected=true;setMobileView(null);}
@@ -960,7 +1045,7 @@ function openDock(id,{autofocus=true}={}){
 }
 function defaultInputMode(p){return p.agent&&!(phone.matches&&st(p.agent_status)==="blocked")?"prompt":"send";}
 function saveDraft(){if(S.pane)drafts.set(draftKey(S.pane),{text:$("dock-input").value,mode:$("dock-mode").value});}
-function closeDock(){saveDraft();S.pane=null;$("dock").classList.remove("open");history.replaceState(null,"",selectionHash());render();pollPanes();}
+function closeDock(){saveDraft();S.pane=null;resetHistory();$("dock").classList.remove("open");history.replaceState(null,"",selectionHash());render();pollPanes();}
 async function closePane(id){
   const p=getPane(id);if(!p||closingPanes.has(id))return;
   if(!confirm(`Close pane "${paneName(p)}" (${id})?${p.agent?`\nThis kills the running ${p.agent} agent.`:""}\nThe terminal pane will be removed. To interrupt the agent without closing the pane, use Ctrl-C ×2 instead.`))return;
@@ -989,7 +1074,7 @@ function ensureMobilePane(){
   const p=mobileSelected?preferredTabPane():(getPane(deepId)||getPane(S.tree.focused.pane)||preferredTabPane()||S.tree.panes[0]);
   if(!p)return;
   loop.done=1; // The mobile initializer has consumed the startup deep link.
-  S.pane=p.pane_id;S.tab=p.tab_id;S.ws=p.workspace_id;S.open.add(S.ws);S.dockStick=true;
+  S.pane=p.pane_id;S.tab=p.tab_id;S.ws=p.workspace_id;S.open.add(S.ws);S.dockStick=true;resetHistory();
   const draft=drafts.get(draftKey(S.pane));$("dock-input").value=draft?.text||"";$("dock-mode").value=draft?.mode||defaultInputMode(p);
   $("dock-term").textContent="Reading terminal…";$("dock").classList.add("open");autoMobileDock=true;
   pollDock();
@@ -1091,7 +1176,7 @@ $("mobile-rename").onclick=()=>renameEntity("pane",S.pane);
 $("dock-rename").onclick=()=>renameEntity("pane",S.pane);
 $("mobile-close").onclick=()=>closePane(S.pane);
 $("mobile-interrupt").onclick=interruptTwice;
-$("mobile-color").onchange=()=>{$("dock-ansi").checked=$("mobile-color").checked;pollDock();};
+$("mobile-color").onchange=()=>{$("dock-ansi").checked=$("mobile-color").checked;rerenderHistory();pollDock();};
 $("tree").addEventListener("keydown",e=>{if(phone.matches&&(e.key==="Enter"||e.key===" ")&&e.target.matches(".node,[data-toggle]")){e.preventDefault();e.target.click();}});
 $("tree").addEventListener("click",e=>{
   const host=e.target.closest("[data-machine]");if(host){if(!host.disabled)switchMachine(host.dataset.machine);return;}
@@ -1115,7 +1200,8 @@ $("native-menu-reset").onclick=()=>{
   finishNative(n);
 };
 $("dock-close").onclick=closeDock;
-$("dock-ansi").onchange=()=>{$("mobile-color").checked=$("dock-ansi").checked;pollDock();};
+$("dock-ansi").onchange=()=>{$("mobile-color").checked=$("dock-ansi").checked;rerenderHistory();pollDock();};
+function rerenderHistory(){if(H.mode!=="history")return;const el=$("dock-term"),top=el.scrollTop;renderHistory(H.raw);el.scrollTop=top;}
 $("dock-focus").onclick=async()=>{const p=getPane(S.pane);if(!p)return;try{await act("focus",{pane:p.pane_id,tab:p.tab_id,agent:!!p.agent});toast("focused in Herdr TUI");refreshTree();}catch(x){toast(x.message,"err");}};
 const KEYS=[["Enter","enter"],["Alt-Enter","alt+enter"],["Esc","esc"],["Ctrl-C","ctrl+c"],["Tab","tab"],["↑","up"],["↓","down"],["←","left"],["→","right"],["y","y"],["n","n"],["1","1"],["2","2"],["3","3"],["Ctrl-D","ctrl+d"],["Ctrl-L","ctrl+l"]];
 $("dock-keys").innerHTML='<span class="hint" style="align-self:center;margin-right:4px">keys:</span>'+KEYS.map(([l,k])=>`<button class="btn" data-key="${esc(k)}">${esc(l)}</button>${k==="ctrl+c"?'<button class="btn mobile-key" data-interrupt-twice title="Send Ctrl-C twice without closing the pane">Ctrl-C ×2</button>':""}`).join("");

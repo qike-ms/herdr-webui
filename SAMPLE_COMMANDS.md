@@ -64,6 +64,9 @@ prefix. Type `/model` and Enter: expect selectable native model rows; tap/click
 one to select it, or use ↑/↓ and Enter with the composer unfocused. Escape cancels native interaction. On uncertain delivery, inspect
 and repair the pane before resetting browser mirroring.
 Check that tapping the composer opens the keyboard while keeping input visible.
+In a pane with more than 400 lines of output, scroll to the top and tap **Load
+older output**: expect earlier lines above the same reading position, then
+**Jump to latest** to return to live output. No input is sent.
 Safari's Share > Add to Home Screen makes a convenient shortcut.
 
 7. Run browser regressions, if Playwright Python and Google Chrome are already installed.

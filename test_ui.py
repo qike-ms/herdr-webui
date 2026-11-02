@@ -92,6 +92,21 @@ class FixtureHandler(BaseHTTPRequestHandler):
         if url.path == "/api/read":
             pane = parse_qs(url.query)["pane"][0]
             self.server.reads.append(pane)
+            query = parse_qs(url.query)
+            self.server.read_queries.append({k: v[0] for k, v in query.items()})
+            if pane in self.server.history and query.get("source") != ["visible"]:
+                lines = int(query["lines"][0])
+                if self.server.fail_history_lines == lines:
+                    self.server.fail_history_lines = None
+                    return self.reply({"error": "Fixture read failed"}, 502)
+                if self.server.delay_lines == lines:
+                    self.server.read_started.set()
+                    self.server.read_release.wait(5)
+                    if self.server.history_on_release:
+                        self.server.history[pane] = self.server.history_on_release
+                rows = self.server.history[pane][-min(lines, 2000):]
+                return self.reply({"text": "\n".join(rows), "lines": min(lines, 2000), "max_lines": 2000,
+                                   "line_limited": lines > 2000, "char_limited": False})
             if pane == self.server.delay_pane and "machine" not in parse_qs(url.query):
                 self.server.read_started.set()
                 self.server.read_release.wait(5)
@@ -181,6 +196,8 @@ class PhoneUITest(unittest.TestCase):
         self.httpd.actions, self.httpd.reads, self.httpd.reports = [], [], []
         self.httpd.native_text, self.httpd.native_selected, self.httpd.model_panes = {}, {}, set()
         self.httpd.delay_pane = None
+        self.httpd.history, self.httpd.read_queries = {}, []
+        self.httpd.fail_history_lines = self.httpd.delay_lines = self.httpd.history_on_release = None
         self.httpd.read_started, self.httpd.read_release = threading.Event(), threading.Event()
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
         self.base = f"http://127.0.0.1:{self.httpd.server_port}"
@@ -1861,6 +1878,113 @@ class PhoneUITest(unittest.TestCase):
             self.page.get_by_role("button", name="Show all agents").click()
             self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
             self.page.get_by_role("button", name="Return to focused pane").click()
+    # ---------------- on-demand scrollback (issue #3) ----------------
+    def wait_live(self, text):
+        self.page.wait_for_function(f"document.querySelector('#dock-term').textContent.includes({json.dumps(text)}) && !document.querySelector('#dock-older').disabled")
+
+    def anchor_offset(self):
+        return self.page.evaluate("""() => {const el=document.querySelector('#dock-term'),m=el.querySelector('[data-history-anchor]');
+            return m.getBoundingClientRect().top-el.getBoundingClientRect().top-parseFloat(getComputedStyle(el).paddingTop);}""")
+
+    def history_reads(self):
+        return [int(q["lines"]) for q in self.httpd.read_queries if q.get("pane") == "p2" and q.get("source") != "visible"]
+
+    def test_load_older_keeps_place_duplicates_draft_and_live_tail(self):
+        rows = ["repeat" if i % 7 == 0 else f"line {i}" for i in range(1000)]
+        self.httpd.history["p2"] = rows
+        self.open()
+        self.page.locator("#dock-input").fill("keep this draft")
+        self.wait_live("line 999")
+        self.page.evaluate("document.querySelector('#dock-term').scrollTop=0")
+        self.page.locator("#dock-older").click()
+        self.page.get_by_text("Showing up to 800 recent lines").wait_for()
+        self.assertEqual(self.page.locator("#dock-term").text_content(), "\n".join(rows[-800:]))  # repeated lines intact
+        self.assertLess(abs(self.anchor_offset()), 2)  # previous top line is still at the top
+        self.httpd.history["p2"] = rows + ["fresh output"]
+        self.page.get_by_role("button", name="New output · Jump to latest").wait_for()
+        self.assertEqual(self.page.locator("#dock-term").text_content(), "\n".join(rows[-800:]))
+        self.assertLess(abs(self.anchor_offset()), 2)
+        self.page.locator("#dock-latest").click()
+        self.wait_live("fresh output")
+        self.assertNotIn("line 300", self.page.locator("#dock-term").text_content())
+        self.assertTrue(self.page.evaluate("(el => el.scrollHeight-el.scrollTop-el.clientHeight < 30)(document.querySelector('#dock-term'))"))
+        self.assertEqual(self.page.locator("#dock-input").input_value(), "keep this draft")
+        self.assertEqual(self.httpd.actions, [])
+        self.assertEqual([n for n in self.history_reads() if n != 400], [800])
+
+    def test_desktop_load_older_keeps_place(self):
+        self.context.close()
+        self.context = self.browser.new_context(viewport={"width": 1280, "height": 800})
+        self.page = self.context.new_page()
+        self.page.on("pageerror", lambda error: self.errors.append(str(error)))
+        self.httpd.history["p2"] = [f"desktop {i}" for i in range(900)]
+        self.open()
+        self.page.evaluate("openDock('p2',{autofocus:false})")
+        self.wait_live("desktop 899")
+        self.page.evaluate("document.querySelector('#dock-term').scrollTop=0")
+        self.page.locator("#dock-older").click()
+        self.page.get_by_text("Showing up to 800 recent lines").wait_for()
+        self.assertLess(abs(self.anchor_offset()), 2)
+        self.assertTrue(self.page.locator("#dock-term").text_content().startswith("desktop 100\n"))
+
+    def test_repeated_loads_stop_at_line_limit_or_retained_start(self):
+        self.httpd.history["p2"] = [f"row {i}" for i in range(3000)]
+        self.open()
+        self.wait_live("row 2999")
+        for status in ("Showing up to 800 recent lines", "Showing up to 1,600 recent lines", "Showing the 2,000-line limit"):
+            self.page.locator("#dock-older").click()
+            self.page.get_by_text(status).wait_for()
+        self.assertTrue(self.page.locator("#dock-older").is_disabled())
+        self.assertTrue(self.page.locator("#dock-term").text_content().startswith("row 1000\n"))
+        self.assertEqual([n for n in self.history_reads() if n != 400], [800, 1600, 2000])
+        self.page.locator("#dock-latest").click()
+        self.httpd.history["p2"] = [f"short {i}" for i in range(500)]
+        self.wait_live("short 499")
+        self.page.locator("#dock-older").click()
+        self.page.get_by_text("Showing up to 800 recent lines").wait_for()
+        self.page.locator("#dock-older").click()
+        self.page.get_by_text("No older output is retained by Herdr for this pane.").wait_for()
+        self.assertTrue(self.page.locator("#dock-older").is_disabled())
+        self.assertTrue(self.page.locator("#dock-term").text_content().startswith("short 0\n"))
+
+    def test_history_errors_retry_and_changed_snapshots_keep_view(self):
+        rows = [f"line {i}" for i in range(1000)]
+        self.httpd.history["p2"] = rows
+        self.httpd.fail_history_lines = 800
+        self.open()
+        self.wait_live("line 999")
+        self.page.locator("#dock-older").click()
+        self.page.get_by_role("button", name="Retry loading older output").wait_for()
+        self.assertIn("Could not load older output", self.page.locator("#dock-history-status").text_content())
+        self.assertIn("line 999", self.page.locator("#dock-term").text_content())
+        self.page.locator("#dock-older").click()
+        self.page.get_by_text("Showing up to 800 recent lines").wait_for()
+        self.httpd.delay_lines, self.httpd.history_on_release = 1600, ["cleared", "screen"]
+        self.page.locator("#dock-older").click()
+        self.assertTrue(self.httpd.read_started.wait(5))
+        self.assertTrue(self.page.locator("#dock-older").is_disabled())  # loads are serialized
+        self.httpd.read_release.set()
+        self.page.locator("#dock-history-apply").wait_for()
+        self.assertEqual(self.page.locator("#dock-term").text_content(), "\n".join(rows[-800:]))
+        self.page.locator("#dock-history-apply").click()
+        self.assertEqual(self.page.locator("#dock-term").text_content(), "cleared\nscreen")
+        self.assertEqual(self.httpd.actions, [])
+
+    def test_history_response_after_pane_switch_is_discarded(self):
+        self.httpd.history["p2"] = [f"line {i}" for i in range(1000)]
+        self.httpd.delay_lines = 800
+        self.open()
+        self.wait_live("line 999")
+        self.page.locator("#dock-older").click()
+        self.assertTrue(self.httpd.read_started.wait(5))
+        self.page.evaluate("openDock('p1',{autofocus:false})")
+        self.page.locator("#dock-term").get_by_text("Terminal output for p1", exact=False).wait_for()
+        self.httpd.read_release.set()
+        self.page.wait_for_timeout(400)
+        self.assertNotIn("line ", self.page.locator("#dock-term").text_content())
+        self.assertEqual(self.page.locator("#dock-history-status").text_content(), "")
+        self.assertTrue(self.page.locator("#dock-latest").is_hidden())
+        self.assertEqual(self.httpd.actions, [])
 
 
 class BrowserDiagnosticsTest(unittest.TestCase):

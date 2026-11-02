@@ -34,6 +34,7 @@ KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9+_\-]{0,31}$")
 KINDS = {"pi", "claude", "codex", "gemini", "cursor", "opencode", "copilot", "amp", "hermes", "qwen", "kimi", "droid"}
 MAX_TEXT = 16_000
 MAX_READ = 250_000
+MAX_READ_LINES = 2000
 
 
 class BridgeError(Exception):
@@ -410,7 +411,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not any(p["pane_id"] == pane for p in snapshot(max_age=5, machine=target["id"], label=target["label"])["panes"]):
                     raise BridgeError("pane is not in the current snapshot", 404)
                 try:
-                    lines = max(5, min(int(q.get("lines", "120")), 2000))
+                    requested = int(q.get("lines", "120"))
+                    lines = max(5, min(requested, MAX_READ_LINES))
                 except ValueError:
                     raise BridgeError("bad request", 400) from None
                 fmt = "ansi" if q.get("ansi") == "1" else "text"
@@ -418,7 +420,13 @@ class Handler(BaseHTTPRequestHandler):
                 if source not in {"recent-unwrapped", "visible"}:
                     raise BridgeError("invalid read source", 400)
                 text = herdr(["pane", "read", pane, "--source", source, "--lines", str(lines), "--format", fmt], parse=False, machine=target["id"])
-                return self._json(200, {"pane": pane, "text": text[-MAX_READ:]})
+                char_limited = len(text) > MAX_READ
+                if char_limited:
+                    # Drop the cut-off first line so a partial line is never shown as complete history.
+                    text = text[-MAX_READ:]
+                    text = text[text.find("\n") + 1:] if "\n" in text else ""
+                return self._json(200, {"pane": pane, "text": text, "lines": lines, "max_lines": MAX_READ_LINES,
+                                        "line_limited": requested > MAX_READ_LINES, "char_limited": char_limited})
             return self._json(404, {"error": "not found"})
         except BridgeError as e:
             self.error_code = e.code
