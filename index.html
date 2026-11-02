@@ -57,6 +57,11 @@ aside{display:flex;flex-direction:column;background:var(--bg1);border-right:1px 
 .node .chev{width:12px;color:var(--fg3);transition:transform .15s;flex:none;text-align:center}
 .node.open>.chev{transform:rotate(90deg)}
 .node.host{color:var(--fg);font-weight:600}
+button.node.host{width:100%;border:0;background:none;text-align:left}
+button.node.host:hover{background:var(--bg2)}
+button.node.host.active{background:#132634;color:var(--cyan)}
+button.node.host:disabled{cursor:not-allowed;opacity:.55}
+button.node.host:focus-visible{outline:2px solid var(--cyan);outline-offset:-2px}
 .kids{margin-left:14px;border-left:1px solid var(--line);padding-left:4px}
 .ico{width:14px;height:14px;flex:none;opacity:.85}
 .dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--fg3)}
@@ -120,10 +125,8 @@ main{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(
 .btn.danger{color:var(--red);border-color:#5a2730;background:#24121a}
 .btn:disabled,.hbtn:disabled,.mobile-icon:disabled,.mobile-agents-btn:disabled{opacity:.45;cursor:not-allowed}
 /* dock */
-.dock{flex:none;height:44vh;min-height:180px;display:none;flex-direction:column;border-top:1px solid var(--line2);background:var(--bg1)}
+.dock{flex:1;min-height:0;display:none;flex-direction:column;border-top:1px solid var(--line2);background:var(--bg1)}
 .dock.open{display:flex}
-.dock-resize{height:5px;cursor:ns-resize;background:transparent;margin-top:-3px}
-.dock-resize:hover{background:var(--cyan)}
 .dh{display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--line);font-family:var(--mono)}
 .dh .title{font-weight:700;color:var(--fg)}
 .dh .pid{color:var(--fg3);font-size:11px}
@@ -193,8 +196,6 @@ select{background:var(--bg0);border:1px solid var(--line2);border-radius:8px;pad
   .tree{padding-top:0}
   .node{min-height:44px;font-size:12px;gap:7px}
   .node .chev{display:grid;place-items:center;align-self:stretch;min-width:24px}
-  .node.host{display:none}
-  .tree>.kids{margin-left:0;border-left:0;padding-left:0}
   .kids{margin-left:9px;padding-left:3px}
   .side-f{display:none}
   .mobile-nav-footer{border-top:1px solid var(--line);padding:10px 12px;gap:8px;align-items:center;justify-content:space-between;font:10px var(--mono);color:var(--fg3)}
@@ -208,8 +209,8 @@ select{background:var(--bg0);border:1px solid var(--line2);border-radius:8px;pad
   .mobile-actions .btn{min-height:40px}
   .dock,.dock.open{flex:1;height:auto!important;min-height:0;border-top:0}
   .dock:not(.open){display:none}
-  .dock-resize,.dock .dh{display:none}
-  .term{padding:16px 14px;font:12px/1.65 var(--mono);overscroll-behavior:contain}
+  .dock .dh{display:none}
+  .term{min-width:0;padding:16px 14px;font:12px/1.65 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;overscroll-behavior:contain}
   .dock .keys{gap:6px;padding:8px 12px;flex-wrap:nowrap;overflow-x:auto;order:3;flex:none;padding-bottom:max(8px,env(safe-area-inset-bottom))}
   .keys .hint{display:none}
   .keys .btn{min-height:34px;padding:0 11px;flex:none;font-size:11px}
@@ -273,6 +274,11 @@ select{background:var(--bg0);border:1px solid var(--line2);border-radius:8px;pad
   .toast{max-width:none;overflow-wrap:anywhere}
 }
 </style>
+<style>
+#machine-error{padding:0 16px 8px;color:var(--red);font-size:12px}
+.short-phone .side-h{justify-content:flex-end}
+.short-phone .side-h h3,.short-phone #active-pill{display:none}
+</style>
 </head>
 <body>
 <div class="app">
@@ -294,6 +300,7 @@ select{background:var(--bg0);border:1px solid var(--line2);border-radius:8px;pad
     <button class="nav-scrim mobile-only" id="mobile-scrim" aria-label="Close navigation" tabindex="-1"></button>
     <aside id="session-sidebar">
       <div class="side-h"><h3>Herdr Session</h3><span class="pill" id="active-pill" style="color:var(--fg3)">Connecting</span><button class="short-only mobile-icon" id="mobile-nav-spawn" disabled aria-label="New session">＋</button><button class="mobile-only mobile-icon" id="mobile-nav-close" aria-label="Close navigation">✕</button></div>
+      <div id="machine-error" role="alert" hidden></div>
       <label class="mobile-only mobile-search"><input id="mobile-filter" placeholder="Find a space, tab, or pane…" aria-label="Find a space, tab or pane" autocomplete="off"></label>
       <div class="tree" id="tree"></div>
       <div class="side-f">
@@ -327,7 +334,6 @@ select{background:var(--bg0);border:1px solid var(--line2);border-radius:8px;pad
       <div class="tabbar" id="tabbar" hidden></div>
       <div class="canvas-wrap" id="canvas-wrap" hidden><div class="canvas" id="canvas"></div></div>
       <section class="dock" id="dock">
-        <div class="dock-resize" id="dock-resize"></div>
         <div class="dh">
           <span class="dot" id="dock-dot"></span>
           <span class="title" id="dock-title">–</span>
@@ -337,7 +343,7 @@ select{background:var(--bg0);border:1px solid var(--line2);border-radius:8px;pad
           <label class="hint"><input type="checkbox" id="dock-ansi" checked> color</label>
           <button class="btn" id="dock-rename">Rename pane</button>
           <button class="btn" id="dock-focus" title="Focus this pane in the Herdr TUI">Focus in Herdr</button>
-          <button class="ibtn" id="dock-close" title="Hide (Esc)">✕</button>
+          <button class="btn" id="dock-close" title="Return to pane overview without stopping the terminal (Esc)" aria-label="Return to pane overview">Overview</button>
         </div>
         <div class="term" id="dock-term"></div>
         <div class="keys" id="dock-keys"></div>
@@ -404,22 +410,54 @@ const ICON = {
   pane:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 10 3 2-3 2m5 1h5"/></svg>',
 };
 
-const S = {tree:null, ws:null, tab:null, pane:null, filter:"", open:new Set(), outputs:new Map(), err:null, busy:false, dockStick:true};
+const S = {machine:new URLSearchParams(location.hash.slice(1)).get("machine")||"local", machines:[], epoch:0, resumePane:null, tree:null, ws:null, tab:null, pane:null, filter:"", open:new Set(), outputs:new Map(), err:null, busy:false, dockStick:true};
 const phone = matchMedia("(max-width:900px)");
 let mobileView = null, mobileSelected = false, autoMobileDock = false, agentStateFilter = null;
 const drafts = new Map();
 const closingPanes = new Set();
-const nativeInputs = new Map();
+let nativeInputs = new Map();
 const deferredSlashes = new Map();
 const submittingSlashes = new Set();
 const rawPaneActions = new Map();
+const hostNativeInputs = new Map();
+// Pane discovery may prune an input while its queue is still awaiting a response.
+const pendingNativeInputs = new Set();
 function rawPaneAct(name,body){
-  const previous=rawPaneActions.get(body.pane)||Promise.resolve();
-  const operation=previous.then(()=>act(name,body));rawPaneActions.set(body.pane,operation);
+  const machine=S.machine,previous=rawPaneActions.get(body.pane)||Promise.resolve();
+  const operation=previous.then(()=>act(name,body,machine));rawPaneActions.set(body.pane,operation);
   operation.finally(()=>{if(rawPaneActions.get(body.pane)===operation)rawPaneActions.delete(body.pane);}).catch(()=>{});
   return operation;
 }
 let interruptBusy = false, submitBusy = false;
+let activeActions = 0;
+const hostSelections = new Map();
+const draftKey = (pane, machine=S.machine) => machine+"/"+pane;
+function machineURL(path, machine=S.machine){return machine==="local"?path:path+(path.includes("?")?"&":"?")+"machine="+encodeURIComponent(machine);}
+function selectionHash(pane){
+  const params=new URLSearchParams();
+  if(S.machine!=="local")params.set("machine",S.machine);
+  if(pane)params.set("pane",pane);
+  return params.size?"#"+params.toString():location.pathname;
+}
+async function refreshMachines(){
+  try{
+    const data=await getJSON("/api/machines");
+    if(!Array.isArray(data.machines)||!data.machines.every(m=>typeof m.id==="string"&&typeof m.label==="string"&&typeof m.enabled==="boolean"))throw new Error("The machine catalog was invalid.");
+    S.machines=data.machines;$("machine-error").hidden=true;renderSide();
+  }catch(e){reportWebUIError("ui_error","/api/machines");$("machine-error").textContent=e.message;$("machine-error").hidden=false;}
+}
+function switchMachine(machine){
+  if(machine===S.machine)return;
+  if(activeActions||submitBusy||interruptBusy||closingPanes.size||rawPaneActions.size||pendingNativeInputs.size){renderSide();toast("Wait for the current action before switching hosts.","err");return;}
+  saveDraft();hostSelections.set(S.machine,{ws:S.ws,tab:S.tab,pane:S.pane,open:S.open});
+  hostNativeInputs.set(S.machine,nativeInputs);
+  nativeInputs=hostNativeInputs.get(machine)||new Map();
+  const saved=hostSelections.get(machine);
+  S.machine=machine;S.epoch++;S.busy=false;S.tree=null;S.err=null;S.ws=saved?.ws||null;S.tab=saved?.tab||null;S.resumePane=saved?.pane||null;S.pane=null;S.open=saved?.open||new Set();S.outputs.clear();S.dockStick=true;
+  mobileSelected=false;agentStateFilter=null;loop.done=1;
+  $("dock").classList.remove("open");$("dock-term").textContent="";$("dock-input").value="";$("canvas").innerHTML="";delete $("canvas").dataset.sig;closeSpawn();
+  history.replaceState(null,"",selectionHash(S.resumePane));render();refreshTree().then(pollPanes);
+}
 
 /* ---------------- utils ---------------- */
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -448,8 +486,10 @@ async function refreshCSRF(){
   })().catch(e=>{reportWebUIError("csrf_refresh_failed");throw e;}).finally(()=>{csrfRefresh=null;});
   return csrfRefresh;
 }
-async function act(name, body){
-  const payload=JSON.stringify(body);
+async function act(name, body, machine=S.machine){
+  const payload=JSON.stringify(machine==="local"?body:{...body,machine});
+  activeActions++;renderSide();
+  try{
   for(let attempt=0;attempt<2;attempt++){
     const token=CSRF;
     const {r,d}=await fetchJSON("/api/action/"+name,{method:"POST",headers:{"Content-Type":"application/json","X-CSRF-Token":token},body:payload});
@@ -462,6 +502,7 @@ async function act(name, body){
     if(d?.ok!==true||!("result" in d)){reportWebUIError("invalid_response","/api/action/"+name,r);throw new Error("Could not confirm delivery: the server response was invalid.");}
     return d.result;
   }
+  }finally{activeActions--;renderSide();}
 }
 const paneName = p => p.label || p.terminal_title_stripped || (p.agent ? p.agent : "shell");
 const st = x => STATUSES.includes(x) ? x : "unknown";
@@ -510,7 +551,8 @@ function nativeModelRows(screen){
   return {rows:lines.slice(start,end+1).map(line=>row(line)[1].trim()),selected:selected-start};
 }
 function createNativeInput(pane,phase="command",screen=""){
-  const n={pane,phase,sent:"",screen,queue:rawPaneActions.get(pane)||Promise.resolve(),pending:0,failed:false,locked:false};nativeInputs.set(pane,n);return n;
+  const n={pane,phase,sent:"",screen,queue:rawPaneActions.get(pane)||Promise.resolve(),pending:0,failed:false,locked:false};
+  Object.defineProperty(n,"machine",{value:S.machine});nativeInputs.set(pane,n);return n;
 }
 function renderNativeMenu(){
   const n=nativeInput(),visible=n&&(n.failed||(!n.cancelRequested&&n.phase!=="params"));
@@ -543,16 +585,28 @@ function nativeEditor(screen){
   }
   return null;
 }
+function ownsNativeInput(n){return S.machine===n.machine&&nativeInputs.get(n.pane)===n;}
+function checkNativeOwner(n){
+  if(!ownsNativeInput(n))throw new DOMException("Native input is no longer active.","AbortError");
+}
+async function nativeAct(n,name,body){
+  checkNativeOwner(n);
+  const result=await act(name,{...body,pane:n.pane},n.machine);
+  checkNativeOwner(n);return result;
+}
 function queueNative(n,work){
-  n.pending++;
-  n.queue=n.queue.then(async()=>{if(n.failed||nativeInputs.get(n.pane)!==n)return;await work();}).catch(e=>{
+  n.pending++;pendingNativeInputs.add(n);renderSide();
+  n.queue=n.queue.then(async()=>{if(n.failed||!ownsNativeInput(n))return;await work();}).catch(e=>{
+    if(e.name==="AbortError")return;
     n.failed=true;toast(`${e.message} Input may already be in the pane; inspect it before retrying.`,"err");
-  }).finally(()=>{n.pending--;if(nativeInput()===n)renderNativeMenu();});
+  }).finally(()=>{if(--n.pending===0){pendingNativeInputs.delete(n);renderSide();}if(nativeInput()===n)renderNativeMenu();});
   return n.queue;
 }
 async function readNative(n,settle=false){
   if(settle)await new Promise(resolve=>setTimeout(resolve,150));
-  const d=await getJSON(`/api/read?pane=${encodeURIComponent(n.pane)}&source=visible&lines=80&ansi=1`);
+  checkNativeOwner(n);
+  const d=await getJSON(machineURL(`/api/read?pane=${encodeURIComponent(n.pane)}&source=visible&lines=80&ansi=1`,n.machine));
+  checkNativeOwner(n);
   if(typeof d.text!=="string")throw new Error("Invalid agent menu response.");
   n.screen=d.text;
   if(nativeModelRows(d.text)&&n.phase!=="model"){n.phase="model";n.sent="";updateNativeDraft(n,"");}
@@ -563,12 +617,12 @@ async function syncNativeText(n,text){
   // Only replace the suffix we own; never clear unrelated terminal input.
   const old=Array.from(n.sent),next=Array.from(text);let common=0;
   while(common<old.length&&common<next.length&&old[common]===next[common])common++;
-  for(let left=old.length-common;left>0;left-=16)await act("keys",{pane:n.pane,keys:Array(Math.min(left,16)).fill("backspace")});
-  const suffix=next.slice(common).join("");if(suffix)await act("send",{pane:n.pane,text:suffix,enter:false});
+  for(let left=old.length-common;left>0;left-=16)await nativeAct(n,"keys",{keys:Array(Math.min(left,16)).fill("backspace")});
+  const suffix=next.slice(common).join("");if(suffix)await nativeAct(n,"send",{text:suffix,enter:false});
   n.sent=text;
 }
 function mirrorNativeText(owner=nativeInput()){
-  const pane=owner?.pane||S.pane,text=S.pane===pane?$("dock-input").value:drafts.get(pane)?.text||"";let n=owner;
+  const pane=owner?.pane||S.pane,text=S.pane===pane?$("dock-input").value:drafts.get(draftKey(pane))?.text||"";let n=owner;
   if((!n||n.cancelRequested)&&text.startsWith("/")&&getPane(pane)?.agent&&submitBusy){deferredSlashes.set(pane,text);return;}
   if(!n&&text.startsWith("/")&&getPane(S.pane)?.agent&&!submitBusy){
     n=createNativeInput(S.pane);renderNativeMenu();
@@ -580,7 +634,7 @@ function mirrorNativeText(owner=nativeInput()){
     await syncNativeText(n,cancel?"":text);
     if(cancel){
       nativeInputs.delete(n.pane);renderNativeMenu();
-      const current=S.pane===n.pane?$("dock-input").value:drafts.get(n.pane)?.text;
+      const current=S.pane===n.pane?$("dock-input").value:drafts.get(draftKey(n.pane))?.text;
       if(current?.startsWith("/")&&!submitBusy){
         const next=createNativeInput(n.pane);queueNative(next,async()=>{await syncNativeText(next,current);await readNative(next,true);});
       }
@@ -591,8 +645,9 @@ function mirrorNativeText(owner=nativeInput()){
   });
 }
 function updateNativeDraft(n,text){
-  drafts.set(n.pane,{text,mode:drafts.get(n.pane)?.mode||"prompt"});
-  if(S.pane===n.pane){$("dock-input").value=text;$("dock-input").style.height="auto";}
+  const key=draftKey(n.pane,n.machine);
+  drafts.set(key,{text,mode:drafts.get(key)?.mode||"prompt"});
+  if(S.machine===n.machine&&S.pane===n.pane){$("dock-input").value=text;$("dock-input").style.height="auto";}
 }
 function finishNative(n){
   nativeInputs.delete(n.pane);updateNativeDraft(n,n.savedDraft??"");renderNativeMenu();
@@ -607,12 +662,12 @@ function selectNativeModel(index){
       const current=nativeModelRows(n.screen),target=current?.rows.indexOf(name);
       if(!current||target<0)throw new Error("The model list changed; select again after inspecting the pane.");
       if(target===current.selected){
-        await act("keys",{pane:n.pane,keys:["enter"]});await readNative(n,true);
+        await nativeAct(n,"keys",{keys:["enter"]});await readNative(n,true);
         if(nativeModelRows(n.screen))throw new Error("The agent did not confirm model selection; inspect the pane.");
         finishNative(n);return;
       }
       if(moves===16)throw new Error("Could not confirm the native model selection.");
-      await act("keys",{pane:n.pane,keys:[target>current.selected?"down":"up"]});
+      await nativeAct(n,"keys",{keys:[target>current.selected?"down":"up"]});
       await readNative(n,true);
     }
   });
@@ -625,10 +680,10 @@ function nativeKeypad(n,key){
   }
   if(key.length===1){
     if(n.locked||n.failed)return;
-    const text=S.pane===n.pane?inp.value:drafts.get(n.pane)?.text||n.sent;
+    const text=S.pane===n.pane?inp.value:drafts.get(draftKey(n.pane))?.text||n.sent;
     const start=S.pane===n.pane?inp.selectionStart:text.length,end=S.pane===n.pane?inp.selectionEnd:text.length,next=text.slice(0,start)+key+text.slice(end);
     updateNativeDraft(n,next);
-    if(S.pane===n.pane)inp.setSelectionRange(start+1,start+1);
+    if(S.pane===n.pane){inp.focus();inp.setSelectionRange(start+1,start+1);}
     mirrorNativeText(n);return;
   }
   nativeKey(key,n);
@@ -637,7 +692,7 @@ function nativeKey(key,n=nativeInput()){
   if(!n)return false;
   if(!["up","down","tab","enter","alt+enter","esc"].includes(key))return true;
   if(n.failed||(n.locked&&!["up","down"].includes(key)))return true;
-  const text=S.pane===n.pane?$("dock-input").value:drafts.get(n.pane)?.text||n.sent,transitionPending=n.locked;
+  const text=S.pane===n.pane?$("dock-input").value:drafts.get(draftKey(n.pane))?.text||n.sent,transitionPending=n.locked;
   const ownsLock=["tab","enter","alt+enter","esc"].includes(key);
   if(ownsLock){n.locked=true;renderNativeMenu();}
   queueNative(n,async()=>{
@@ -645,7 +700,7 @@ function nativeKey(key,n=nativeInput()){
     // Let bracketed paste settle before a dependent native completion/selection key.
     await readNative(n,true);
     if(key==="tab"&&n.phase!=="model"){
-      await act("keys",{pane:n.pane,keys:["tab"]});
+      await nativeAct(n,"keys",{keys:["tab"]});
       // Tab changes the editor in the agent. Wait for its actual completed prefix.
       const deadline=Date.now()+2500;let completed=null;
       do{
@@ -655,13 +710,13 @@ function nativeKey(key,n=nativeInput()){
       }while(Date.now()<deadline);
       if(!completed||(completed===n.sent&&/^\s*[→❯›>]\s*\S/m.test(stripAnsi(n.screen))))throw new Error("Could not confirm native completion.");
       n.sent=completed;
-      if(!n.sent.endsWith(" ")){await act("send",{pane:n.pane,text:" ",enter:false});n.sent+=" ";}
+      if(!n.sent.endsWith(" ")){await nativeAct(n,"send",{text:" ",enter:false});n.sent+=" ";}
       n.phase="params";
       if(S.pane!==n.pane||$("dock-input").value===text)updateNativeDraft(n,n.sent);
     }else{
       const model=n.phase!=="model"&&(n.sent.trim()==="/model"||(n.phase==="command"&&/^\s*[→❯›>]\s*\/?model\b/m.test(stripAnsi(n.screen))));
       if(key==="esc")await syncNativeText(n,"");
-      await act("keys",{pane:n.pane,keys:[key]});
+      await nativeAct(n,"keys",{keys:[key]});
       if(key==="enter"||key==="alt+enter"||key==="esc"){
         if(key==="enter"&&model){n.phase="model";n.sent="";updateNativeDraft(n,"");await readNative(n,true);}
         else{
@@ -682,38 +737,46 @@ function nativeKey(key,n=nativeInput()){
 /* ---------------- data ---------------- */
 async function refreshTree(manual=false){
   if(S.busy)return;S.busy=true;
+  const epoch=S.epoch,machine=S.machine;
   const retry=$("connection-retry"),retryFocused=manual&&document.activeElement===retry;
   if(manual){$("refresh-ico").classList.add("spin");retry.disabled=true;retry.setAttribute("aria-busy","true");retry.textContent="Connecting…";}
   try{
-    S.tree=await getJSON("/api/tree");S.err=null;
+    const tree=await getJSON(machineURL("/api/tree",machine));
+    if(epoch!==S.epoch)return;
+    S.tree=tree;S.err=null;
     for(const pane of nativeInputs.keys())if(!getPane(pane))nativeInputs.delete(pane);
     // keep selection valid; default to the TUI's focused space/tab
     if(!getWs(S.ws)){S.ws=S.tree.focused.workspace||S.tree.workspaces[0]?.workspace_id||null;S.tab=null;if(S.ws)S.open.add(S.ws);}
     if(!getTab(S.tab)||getTab(S.tab).workspace_id!==S.ws){const w=getWs(S.ws);S.tab=(w&&getTab(w.active_tab_id))?w.active_tab_id:(S.ws?tabsOf(S.ws)[0]?.tab_id:null);}
     if(S.pane&&!getPane(S.pane)){toast(`pane ${S.pane} is gone`,"err");closeDock();}
+    if(S.resumePane){const pane=S.resumePane;S.resumePane=null;if(getPane(pane))openDock(pane,{autofocus:false});}
     if(phone.matches)ensureMobilePane();
-  }catch(e){reportWebUIError("ui_error","/api/tree");S.err=e.message;}
+  }catch(e){if(epoch===S.epoch){reportWebUIError("ui_error","/api/tree");S.err=e.message;}}
   finally{
+    if(epoch===S.epoch){
     S.busy=false;
     if(manual){$("refresh-ico").classList.remove("spin");retry.disabled=false;retry.removeAttribute("aria-busy");retry.textContent="Retry connection";}
     render();if(retryFocused&&!S.tree&&document.activeElement===document.body)retry.focus({preventScroll:true});
+    }
   }
 }
 
 const reading=new Set();
 async function readPane(id,{lines=60,ansi=false}={}){
-  if(reading.has(id+ansi))return;reading.add(id+ansi);
-  try{const d=await getJSON(`/api/read?pane=${encodeURIComponent(id)}&lines=${lines}&ansi=${ansi?1:0}`);return d.text;}
+  const machine=S.machine,key=draftKey(id,machine)+"/"+ansi;
+  if(reading.has(key))return;reading.add(key);
+  try{const d=await getJSON(machineURL(`/api/read?pane=${encodeURIComponent(id)}&lines=${lines}&ansi=${ansi?1:0}`,machine));return d.text;}
   catch(e){reportWebUIError("ui_error","/api/read");return `⚠ ${e.message}`;}
-  finally{reading.delete(id+ansi);}
+  finally{reading.delete(key);}
 }
 async function pollPanes(){
-  if(!S.tree||!S.tab||document.hidden||phone.matches)return;
+  if(!S.tree||!S.tab||S.pane||document.hidden||phone.matches)return;
+  const epoch=S.epoch;
   const ps=panesOf(S.tab);const lay=layoutOf(S.tab);
   await Promise.all(ps.map(async p=>{
     const r=lay?.panes.find(x=>x.pane_id===p.pane_id)?.rect;
     const txt=await readPane(p.pane_id,{lines:Math.min(Math.max((r?.height||40),20),200)});
-    if(txt===undefined)return;S.outputs.set(p.pane_id,txt);
+    if(txt===undefined||epoch!==S.epoch)return;S.outputs.set(p.pane_id,txt);
     const el=document.querySelector(`.pane[data-id="${CSS.escape(p.pane_id)}"] .pb`);
     if(el){const atBottom=el.scrollHeight-el.scrollTop-el.clientHeight<30;el.textContent=stripAnsi(txt);if(atBottom)el.scrollTop=el.scrollHeight;}
   }));
@@ -721,13 +784,13 @@ async function pollPanes(){
 async function pollDock(){
   if(!S.pane||document.hidden)return;
   const n=nativeInput();if(n&&!n.failed&&!n.pending)queueNative(n,()=>readNative(n));
-  const id=S.pane,ansi=$("dock-ansi").checked;const txt=await readPane(id,{lines:400,ansi});if(txt===undefined||S.pane!==id||$("dock-ansi").checked!==ansi)return;
+  const epoch=S.epoch,machine=S.machine,id=S.pane,ansi=$("dock-ansi").checked;const txt=await readPane(id,{lines:400,ansi});if(txt===undefined||epoch!==S.epoch||S.pane!==id||$("dock-ansi").checked!==ansi)return;
   const el=$("dock-term");const atBottom=el.scrollHeight-el.scrollTop-el.clientHeight<30;
   el.innerHTML=ansi?ansiToHtml(txt):esc(txt);if(atBottom||S.dockStick){el.scrollTop=el.scrollHeight;S.dockStick=false;}
   if(!nativeInput()&&getPane(id)?.agent&&nativeModelRows(txt)){
     try{
-      const visible=await getJSON(`/api/read?pane=${encodeURIComponent(id)}&source=visible&lines=80&ansi=1`);
-      if(S.pane===id&&!nativeInput()&&nativeModelRows(visible.text)){
+      const visible=await getJSON(machineURL(`/api/read?pane=${encodeURIComponent(id)}&source=visible&lines=80&ansi=1`,machine));
+      if(epoch===S.epoch&&S.pane===id&&!nativeInput()&&nativeModelRows(visible.text)){
         const n=createNativeInput(id,"model",visible.text);n.savedDraft=$("dock-input").value;$("dock-input").value="";renderNativeMenu();
       }
     }catch(e){toast(e.message,"err");}
@@ -742,12 +805,12 @@ function tabMatch(t){return matches(tabName(t),t.tab_id)||panesOf(t.tab_id).some
 function wsMatch(w){return matches(wsName(w),w.workspace_id)||tabsOf(w.workspace_id).some(tabMatch);}
 
 /* ---------------- render ---------------- */
-function render(){renderConnectionState();renderSide();renderCrumbs();renderTabs();if(!phone.matches)renderCanvas();renderDockHeader();renderMobile();renderNativeMenu();}
+function render(){renderConnectionState();renderSide();renderCrumbs();renderTabs();if(!phone.matches&&!S.pane)renderCanvas();renderDockHeader();renderMobile();renderNativeMenu();}
 
 function renderConnectionState(){
   const waiting=!S.tree;
   $("connection-state").hidden=!waiting;
-  $("tabbar").hidden=waiting;$("canvas-wrap").hidden=waiting;
+  $("tabbar").hidden=waiting;$("canvas-wrap").hidden=waiting||!!S.pane;
   for(const id of ["btn-spawn","mobile-spawn","mobile-nav-spawn","mobile-agents"])$(id).disabled=waiting;
   const title=S.err?"Waiting for Herdr":"Connecting to Herdr…";
   if($("connection-title").textContent!==title)$("connection-title").textContent=title;
@@ -775,21 +838,26 @@ async function renameEntity(kind,id){
 function renderSide(){
   const t=S.tree,el=$("tree");
   const renameFocus=el.contains(document.activeElement)&&document.activeElement.dataset.rename?{kind:document.activeElement.dataset.rename,id:document.activeElement.dataset.renameId}:null;
-  const focused=phone.matches&&el.contains(document.activeElement)?document.activeElement:null;
-  const focusKey=focused&&["toggle","pane","tab","ws"].find(k=>focused.dataset[k]);
+  const focused=el.contains(document.activeElement)?document.activeElement:null;
+  const focusKey=focused&&["machine","toggle","pane","tab","ws"].find(k=>focused.dataset[k]);
   const focusId=focusKey&&focused.dataset[focusKey];
   const online=!!t&&!S.err;
   $("conn").innerHTML=online?'<span style="color:var(--green)">● CONNECTED</span>':`<span style="color:${S.err?"var(--red)":"var(--fg3)"}" title="${esc(S.err||"")}">● ${t?"STALE":S.err?"OFFLINE":"CONNECTING"}</span>`;
   $("active-pill").style.color=t?"var(--green)":"var(--fg3)";
-  if(!t){$("active-pill").textContent=S.err?"Offline":"Connecting";el.innerHTML=`<div class="hint" style="padding:10px">${S.err?"Waiting for Herdr. Start it to see your sessions here.":"Loading…"}</div>`;return;}
+  if(t){
   $("ver").textContent=`v${t.version} · proto ${t.protocol}`;$("lat").textContent=`${t.latency_ms} ms`;
   $("counts").textContent=`${t.workspaces.length} · ${t.tabs.length} · ${t.panes.length}`;
   const agents=t.panes.filter(p=>p.agent);const cnt=Object.fromEntries(STATUSES.map(s=>[s,agents.filter(p=>st(p.agent_status)===s).length]));
   $("active-pill").textContent=`${cnt.working} active`;$("active-pill").title=`${agents.length} agents`;
   $("bars").innerHTML=agents.length?STATUSES.map(s=>cnt[s]?`<span style="width:${cnt[s]/agents.length*100}%;background:${STATUS_COLOR[s]}"></span>`:"").join(""):"";
   $("legend").innerHTML=STATUSES.filter(s=>cnt[s]).map(s=>`<span><span style="color:${STATUS_COLOR[s]}">●</span> ${s} ${cnt[s]}</span>`).join(" ");
-  let h=`<div class="node host"><span class="dot ${online?"s-online":"s-offline"}"></span>${ICON.host}<span class="name">${esc(t.host)}</span><span class="meta">local</span></div><div class="kids">`;
-  for(const w of [...t.workspaces].sort((a,b)=>a.number-b.number)){
+  }else{
+    $("active-pill").textContent=S.err?"Offline":"Connecting";$("active-pill").title="";
+    for(const id of ["ver","lat","counts"])$(id).textContent="–";
+    $("bars").innerHTML="";$("legend").innerHTML="";
+  }
+  let h="";
+  for(const w of [...(t?.workspaces||[])].sort((a,b)=>a.number-b.number)){
     if(!wsMatch(w))continue;
     const open=S.open.has(w.workspace_id)||!!S.filter;
     h+=`<div class="node ${open?"open":""} ${w.workspace_id===S.ws?"active":""}" data-ws="${esc(w.workspace_id)}"><span class="chev" data-toggle="${esc(w.workspace_id)}">›</span>${ICON.space}<span class="name">${esc(wsName(w))}</span><span class="dot s-${st(w.agent_status)}" title="${esc(w.agent_status)}"></span><span class="count">${w.pane_count}</span>${renameButton("space",w.workspace_id)}</div>`;
@@ -807,7 +875,14 @@ function renderSide(){
     }
     h+=`</div>`;
   }
-  el.innerHTML=h+"</div>";
+  const items=S.machines.length?[...S.machines]:[{id:"local",label:"Local host",enabled:true}];
+  if(!items.some(m=>m.id===S.machine))items.push({id:S.machine,label:"Unavailable host",enabled:false});
+  el.innerHTML=items.map(m=>{
+    const selected=m.id===S.machine,state=selected?(online?"online":S.err?"offline":"unknown"):"unknown";
+    const host=`<button type="button" class="node host ${selected?"active open":""}" data-machine="${esc(m.id)}" aria-label="Select host ${esc(m.label)}" aria-expanded="${selected}"${selected?' aria-current="true"':""}${!m.enabled||activeActions>0||pendingNativeInputs.size?" disabled":""}><span class="chev">›</span>${ICON.host}<span class="name">${esc(m.label)}</span><span class="meta">${m.id==="local"?"local":"remote"}${m.enabled?"":" / disabled"}</span><span class="dot s-${state}"></span></button>`;
+    const children=t?h:`<div class="hint" style="padding:10px">${S.err?"Waiting for Herdr. Select another host or retry the connection.":"Loading…"}</div>`;
+    return host+(selected?`<div class="kids" data-machine-children="${esc(m.id)}">${children}</div>`:"");
+  }).join("");
   if(phone.matches)el.querySelectorAll(".node:not(.host),[data-toggle]").forEach(n=>{n.tabIndex=0;n.setAttribute("role","button");if(n.dataset.toggle)n.setAttribute("aria-label","Expand or collapse space");});
   if(renameFocus)el.querySelector(`[data-rename="${CSS.escape(renameFocus.kind)}"][data-rename-id="${CSS.escape(renameFocus.id)}"]`)?.focus({preventScroll:true});
   else if(focusKey)el.querySelector(`[data-${focusKey}="${CSS.escape(focusId)}"]`)?.focus({preventScroll:true});
@@ -870,22 +945,22 @@ function renderDockHeader(){
 }
 
 /* ---------------- selection ---------------- */
-function selectWs(id){S.ws=id;S.open.add(id);const w=getWs(id);S.tab=(w&&getTab(w.active_tab_id))?w.active_tab_id:tabsOf(id)[0]?.tab_id;if(phone.matches){selectMobileTabPane();return;}render();pollPanes();}
-function selectTab(id){const t=getTab(id);if(!t)return;S.ws=t.workspace_id;S.tab=id;if(phone.matches){selectMobileTabPane();return;}render();pollPanes();}
+function selectWs(id){S.ws=id;S.open.add(id);const w=getWs(id);S.tab=(w&&getTab(w.active_tab_id))?w.active_tab_id:tabsOf(id)[0]?.tab_id;if(phone.matches||S.pane){selectTabPane();return;}render();pollPanes();}
+function selectTab(id){const t=getTab(id);if(!t)return;S.ws=t.workspace_id;S.tab=id;if(phone.matches||S.pane){selectTabPane();return;}render();pollPanes();}
 function openDock(id,{autofocus=true}={}){
   const p=getPane(id);if(!p)return;
   if(S.tab!==p.tab_id){S.ws=p.workspace_id;S.tab=p.tab_id;S.open.add(p.workspace_id);}
   if(S.pane!==id){
     saveDraft();S.pane=id;S.dockStick=true;$("dock-term").innerHTML='<span class="dim">reading terminal…</span>';
-    const draft=drafts.get(id);$("dock-input").value=draft?.text||"";$("dock-input").style.height="auto";$("dock-mode").value=draft?.mode||defaultInputMode(p);
+    const draft=drafts.get(draftKey(id));$("dock-input").value=draft?.text||"";$("dock-input").style.height="auto";$("dock-mode").value=draft?.mode||defaultInputMode(p);
   }
   if(phone.matches){mobileSelected=true;setMobileView(null);}
-  history.replaceState(null,"","#pane="+encodeURIComponent(id));
+  history.replaceState(null,"",selectionHash(id));
   $("dock").classList.add("open");render();pollDock();if(autofocus&&!phone.matches)$("dock-input").focus();
 }
 function defaultInputMode(p){return p.agent&&!(phone.matches&&st(p.agent_status)==="blocked")?"prompt":"send";}
-function saveDraft(){if(S.pane)drafts.set(S.pane,{text:$("dock-input").value,mode:$("dock-mode").value});}
-function closeDock(){saveDraft();S.pane=null;$("dock").classList.remove("open");history.replaceState(null,"",location.pathname);render();}
+function saveDraft(){if(S.pane)drafts.set(draftKey(S.pane),{text:$("dock-input").value,mode:$("dock-mode").value});}
+function closeDock(){saveDraft();S.pane=null;$("dock").classList.remove("open");history.replaceState(null,"",selectionHash());render();pollPanes();}
 async function closePane(id){
   const p=getPane(id);if(!p||closingPanes.has(id))return;
   if(!confirm(`Close pane "${paneName(p)}" (${id})?${p.agent?`\nThis kills the running ${p.agent} agent.`:""}\nThe terminal pane will be removed. To interrupt the agent without closing the pane, use Ctrl-C ×2 instead.`))return;
@@ -903,7 +978,7 @@ async function interruptTwice(){
 }
 
 /* ---------------- phone navigation ---------------- */
-function mobilePaneForTab(){
+function preferredTabPane(){
   return panesOf(S.tab).find(p=>p.pane_id===S.tree.focused.pane)||panesOf(S.tab).find(p=>p.focused)||panesOf(S.tab)[0];
 }
 function ensureMobilePane(){
@@ -911,17 +986,17 @@ function ensureMobilePane(){
   const selected=getPane(S.pane);
   if(selected){S.ws=selected.workspace_id;S.tab=selected.tab_id;return;}
   const deepId=new URLSearchParams(location.hash.slice(1)).get("pane");
-  const p=mobileSelected?mobilePaneForTab():(getPane(deepId)||getPane(S.tree.focused.pane)||mobilePaneForTab()||S.tree.panes[0]);
+  const p=mobileSelected?preferredTabPane():(getPane(deepId)||getPane(S.tree.focused.pane)||preferredTabPane()||S.tree.panes[0]);
   if(!p)return;
   loop.done=1; // The mobile initializer has consumed the startup deep link.
   S.pane=p.pane_id;S.tab=p.tab_id;S.ws=p.workspace_id;S.open.add(S.ws);S.dockStick=true;
-  const draft=drafts.get(S.pane);$("dock-input").value=draft?.text||"";$("dock-mode").value=draft?.mode||defaultInputMode(p);
+  const draft=drafts.get(draftKey(S.pane));$("dock-input").value=draft?.text||"";$("dock-mode").value=draft?.mode||defaultInputMode(p);
   $("dock-term").textContent="Reading terminal…";$("dock").classList.add("open");autoMobileDock=true;
   pollDock();
 }
-function selectMobileTabPane(){
+function selectTabPane(){
   mobileSelected=true;
-  const p=mobilePaneForTab();
+  const p=preferredTabPane();
   if(p)openDock(p.pane_id,{autofocus:false});
   else{closeDock();setMobileView(null);render();}
 }
@@ -1019,6 +1094,7 @@ $("mobile-interrupt").onclick=interruptTwice;
 $("mobile-color").onchange=()=>{$("dock-ansi").checked=$("mobile-color").checked;pollDock();};
 $("tree").addEventListener("keydown",e=>{if(phone.matches&&(e.key==="Enter"||e.key===" ")&&e.target.matches(".node,[data-toggle]")){e.preventDefault();e.target.click();}});
 $("tree").addEventListener("click",e=>{
+  const host=e.target.closest("[data-machine]");if(host){if(!host.disabled)switchMachine(host.dataset.machine);return;}
   const rename=e.target.closest('[data-rename]');if(rename){renameEntity(rename.dataset.rename,rename.dataset.renameId);return;}
   const tog=e.target.closest("[data-toggle]");if(tog){const id=tog.dataset.toggle;S.open.has(id)?S.open.delete(id):S.open.add(id);renderSide();return;}
   const n=e.target.closest(".node");if(!n)return;
@@ -1057,7 +1133,7 @@ $("dock-input").addEventListener("keydown",e=>{
 $("dock-input").addEventListener("input",e=>{e.target.style.height="auto";e.target.style.height=Math.min(e.target.scrollHeight,140)+"px";if(!e.isComposing)mirrorNativeText();});
 $("dock-input").addEventListener("compositionend",()=>mirrorNativeText());
 async function submitDraft(mode){
-  const inp=$("dock-input"),text=inp.value,pane=S.pane;if(!pane||submitBusy)return;
+  const inp=$("dock-input"),text=inp.value,pane=S.pane,key=draftKey(pane);if(!pane||submitBusy)return;
   const cancelling=nativeInput()?.cancelRequested?nativeInput():null;
   if(nativeInput()&&!cancelling){nativeKey(mode==="followup"?"alt+enter":"enter");return;}
   if(!text&&mode!=="send"){if(mode==="followup")toast("Type a message in the WebUI before using Alt-Enter.","err");return;}
@@ -1078,13 +1154,13 @@ async function submitDraft(mode){
     if(mode==="prompt"||mode==="followup")await act(mode,{pane,text});
     else await act("send",{pane,text,enter:mode==="send"});
     confirmed=true;
-    const draft=drafts.get(pane);if(draft?.text===text)drafts.delete(pane);
+    const draft=drafts.get(key);if(draft?.text===text)drafts.delete(key);
     if(S.pane===pane&&inp.value===text){inp.value="";inp.style.height="auto";}S.dockStick=true;setTimeout(pollDock,300);setTimeout(refreshTree,600);
   }catch(x){toast(mode==="followup"?`${x.message} Text may already be in the terminal; inspect it before retrying.`:x.message,"err");}
   finally{
     submittingSlashes.delete(pane);submitBusy=false;send.disabled=alt.disabled=false;
     if(confirmed)for(const [id,queued] of deferredSlashes){
-      const current=S.pane===id?inp.value:drafts.get(id)?.text;
+      const current=S.pane===id?inp.value:drafts.get(draftKey(id))?.text;
       if(current!==queued||!current?.startsWith("/")||nativeInputs.has(id)||!getPane(id)?.agent)continue;
       const n=createNativeInput(id);queueNative(n,async()=>{await syncNativeText(n,current);await readNative(n,true);});
     }
@@ -1092,10 +1168,6 @@ async function submitDraft(mode){
   }
 }
 $("dock-form").addEventListener("submit",e=>{e.preventDefault();submitDraft($("dock-mode").value);});
-// dock resize
-$("dock-resize").addEventListener("mousedown",e=>{e.preventDefault();const startY=e.clientY,startH=$("dock").offsetHeight;
-  const mv=ev=>{$("dock").style.height=Math.max(160,Math.min(window.innerHeight-160,startH+startY-ev.clientY))+"px";};
-  const up=()=>{removeEventListener("mousemove",mv);removeEventListener("mouseup",up);};addEventListener("mousemove",mv);addEventListener("mouseup",up);});
 $("filter").addEventListener("input",e=>{S.filter=e.target.value.trim().toLowerCase();$("mobile-filter").value=e.target.value;renderSide();});
 $("btn-refresh").onclick=()=>refreshTree(true).then(pollPanes);
 $("btn-max").onclick=()=>$("body").classList.toggle("nosidebar");
@@ -1135,10 +1207,11 @@ $("spawn-x").onclick=$("spawn-cancel").onclick=closeSpawn;
 $("spawn").addEventListener("click",e=>{if(e.target===$("spawn"))closeSpawn();});
 $("spawn-form").addEventListener("submit",async e=>{
   e.preventDefault();const go=$("spawn-go");go.disabled=true;go.textContent=$("sp-kind").value?"Starting agent…":"Creating…";
+  const epoch=S.epoch;
   try{
     const res=await act("spawn",{workspace:$("sp-space").value||null,space_label:$("sp-space-label").value.trim()||null,tab_label:$("sp-tab-label").value.trim()||null,kind:$("sp-kind").value||null,name:$("sp-name").value.trim()||null});
     closeSpawn();$("spawn-form").reset();toast(`launched ${res.pane_id}`);
-    await refreshTree();if(res.pane_id&&getPane(res.pane_id))openDock(res.pane_id);
+    await refreshTree();if(epoch===S.epoch&&res.pane_id&&getPane(res.pane_id))openDock(res.pane_id);
   }catch(x){toast(x.message,"err");refreshTree();}
   finally{go.disabled=false;go.textContent="Launch";}
 });
@@ -1153,6 +1226,7 @@ async function loop(){
 }
 setInterval(()=>{if(S.pane)pollDock();},1000);
 document.addEventListener("visibilitychange",()=>{if(!document.hidden){refreshTree().then(pollPanes);}});
+renderSide();refreshMachines();setInterval(refreshMachines,10000);
 loop();
 </script>
 </body>

@@ -8,20 +8,29 @@ output and direct agent interaction from the browser.
 
 - One Python file (`server.py`, stdlib only) + one HTML file (`index.html`, no CDN, no build).
 - Talks to Herdr only through its supported CLI (`herdr api snapshot`, `pane read`, …).
-- Single host (the local Herdr server). Multi-host is planned.
+- Local Herdr session plus saved SSH machines, shown as top-level sidebar tree nodes.
+  Click a host to expand its spaces, tabs, and panes; only the selected host is
+  expanded. Other hosts remain visible, including while a connection is unavailable.
+  Each request explicitly targets its selected host; pane IDs, drafts, snapshots,
+  and delayed output never cross hosts. Remote errors never fall back to Local.
 
 ## Features
 
-- Sidebar tree of spaces, tabs, and panes with live agent status (working / blocked / done / idle).
+- Sidebar tree of hosts, spaces, tabs, and panes with live agent status (working / blocked / done / idle).
 - Tab bar and pane canvas laid out from Herdr's real split geometry; each pane streams recent output.
-- Inspector dock: full-color (ANSI) terminal view, then
+- Single interactive terminal view: opening a pane replaces the desktop preview
+  grid instead of showing duplicate output. **Overview** returns to the grid
+  without stopping the terminal or agent; selecting another tab/space while
+  interacting opens its focused/first pane and preserves drafts.
+  The full-color (ANSI) terminal view includes
   - **Prompt agent** (`herdr agent prompt`),
   - **Type + Enter** (`herdr pane run`, atomic — safe for blocked approval prompts),
   - **Type only**, and one-click keys (Enter, Alt-Enter, Esc, Ctrl-C, arrows, y/n, 1/2/3…).
 - Launch a new space or tab, optionally starting an agent (`pi`, `claude`, `codex`, …) — without stealing TUI focus.
 - Split / close panes, focus a pane in the Herdr TUI, filter (⌘K), `#pane=<id>` deep links.
 - Phone layout (900px wide and below): one focused terminal, hamburger navigation,
-  a separate all-agents view, and touch-friendly input. Desktop keeps its original layout.
+  a separate all-agents view, and touch-friendly input. Desktop offers the pane
+  overview or one interactive terminal, not both at once.
 
 ## Phone UI
 
@@ -37,6 +46,9 @@ output and direct agent interaction from the browser.
 - The message composer and horizontally scrollable terminal keys stay below the
   output. Input drafts are kept separately per pane while the page is open.
   Selecting a pane does not open the phone keyboard or send a command.
+- Phone terminal output wraps to the screen, including long paths and unbroken
+  lines, while preserving newlines, indentation, and ANSI colors. Desktop output
+  keeps its original unwrapped terminal layout.
 - Input modes remain **Prompt agent**, **Type + Enter**, and **Type only**.
   Blocked agents default to **Type + Enter** so approval replies reach the terminal.
 - **Alt-Enter**, beside Enter, sends the WebUI message text to the selected pane
@@ -71,6 +83,21 @@ python3 server.py            # http://127.0.0.1:8780
 python3 server.py --port 9000
 HERDR_BIN=/path/to/herdr HERDR_TIMEOUT=20 python3 server.py
 ```
+
+For a managed named local session, set `HERDR_SESSION`:
+
+```bash
+HERDR_BIN=/path/to/herdr HERDR_SESSION=personal python3 server.py
+```
+
+Use the canonical Herdr executable, not a wrapper that always inserts `--session`.
+Local calls use the configured session; remote calls use only `--machine` and the
+saved profile's remote session. Register and enable SSH machines in Herdr first.
+The sidebar's host nodes list saved machines without copying credentials or starting remote
+servers. The dashboard cannot assign work automatically or override native agent
+approvals. Select a host before creating a space or sending terminal input.
+Switching hosts is blocked during command delivery; other read-only navigation
+does not change TUI focus. Links include both host and pane for remote selections.
 
 ## Private remote access (Tailscale)
 
@@ -158,7 +185,8 @@ config = {
     "Label": "dev.herdr.webui",
     "ProgramArguments": [sys.executable, "-u", str(repo / "server.py"), "--allow-host", host],
     "WorkingDirectory": str(repo),
-    "EnvironmentVariables": {"HOME": str(home), "PATH": os.environ["PATH"], "HERDR_BIN": herdr},
+    "EnvironmentVariables": {"HOME": str(home), "PATH": os.environ["PATH"], "HERDR_BIN": herdr,
+                             "HERDR_SESSION": os.environ.get("HERDR_SESSION", "")},
     "RunAtLoad": True, "KeepAlive": True, "ThrottleInterval": 5,
     "StandardOutPath": str(logs / "stdout.log"),
     "StandardErrorPath": str(logs / "stderr.log"),
@@ -302,7 +330,9 @@ python3 -m unittest test_server test_error_log -v   # fictional requests; no liv
 
 Optional browser regressions use an **already installed** Playwright Python package
 and Google Chrome. They run against fictional sessions on an ephemeral loopback
-server and never send commands to your real Herdr server:
+server. For the dashboard tests, an installed Playwright Chromium can be selected
+with `HERDR_WEBUI_BROWSER=chromium`; the tests do not download browsers or send
+commands to your real Herdr server:
 
 ```bash
 python3 -m unittest test_ui test_mockup -v

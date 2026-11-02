@@ -1,10 +1,12 @@
 """Browser regressions with fictional sessions; never connects to live Herdr.
 
-Uses an already installed Playwright and Google Chrome (no downloads).
+Uses installed Playwright and Google Chrome by default.
+Set HERDR_WEBUI_BROWSER=chromium to use an installed Playwright Chromium.
 Run: python3 -m unittest test_ui -v
 """
 import copy
 import json
+import os
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -71,17 +73,26 @@ class FixtureHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if url.path == "/api/machines":
+            return self.reply({"machines": [
+                {"id": "local", "label": "Local demo", "enabled": True},
+                {"id": "worker-a", "label": "Worker A", "enabled": True},
+                {"id": "disabled-worker", "label": "Disabled worker", "enabled": False}
+            ]})
         if url.path == "/api/tree":
             if self.server.delay_tree:
                 self.server.tree_started.set()
                 self.server.tree_release.wait(5)
             if self.server.fail_tree:
                 return self.reply({"error": self.server.tree_error}, 502)
-            return self.reply(self.server.tree)
+            tree = copy.deepcopy(self.server.tree)
+            if parse_qs(url.query).get("machine") == ["worker-a"]:
+                tree["host"] = "Worker A"
+            return self.reply(tree)
         if url.path == "/api/read":
             pane = parse_qs(url.query)["pane"][0]
             self.server.reads.append(pane)
-            if pane == self.server.delay_pane:
+            if pane == self.server.delay_pane and "machine" not in parse_qs(url.query):
                 self.server.read_started.set()
                 self.server.read_release.wait(5)
             if parse_qs(url.query).get("source") == ["visible"]:
@@ -97,7 +108,8 @@ class FixtureHandler(BaseHTTPRequestHandler):
                 return self.reply({"text": screen})
             if pane in self.server.model_panes:
                 return self.reply({"text": ">\n→ Model Alpha\n  Model Beta\nEnter to select · Escape to cancel"})
-            return self.reply({"text": f"Terminal output for {pane}\n\x1b[32mReady\x1b[0m\n"})
+            prefix = "Remote " if parse_qs(url.query).get("machine") == ["worker-a"] else ""
+            return self.reply({"text": f"{prefix}Terminal output for {pane}\n\x1b[32mReady\x1b[0m\n"})
         self.reply({"error": "not found"}, 404)
 
     def do_POST(self):
@@ -148,7 +160,7 @@ class PhoneUITest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.playwright = sync_playwright().start()
-        cls.browser = cls.playwright.chromium.launch(channel="chrome", headless=True)
+        cls.browser = cls.playwright.chromium.launch(channel=os.environ.get("HERDR_WEBUI_BROWSER", "chrome"), headless=True)
 
     @classmethod
     def tearDownClass(cls):
@@ -412,6 +424,77 @@ class PhoneUITest(unittest.TestCase):
         self.assertEqual(self.httpd.actions[-1][0], '/api/action/followup')
         self.assertEqual(self.httpd.actions[-1][1]['text'], 'normal followup')
 
+    def test_native_menus_and_saved_drafts_are_isolated_by_host(self):
+        self.open()
+        self.page.locator('#dock-input').fill('/help local')
+        self.page.wait_for_function('nativeInput()?.pending === 0')
+        self.page.evaluate('switchMachine("worker-a")')
+        self.page.wait_for_function('S.machine === "worker-a" && S.pane === "p2"')
+        self.assertTrue(self.page.evaluate('!nativeInput()'))
+        self.assertEqual(self.page.locator('#dock-input').input_value(), '')
+        self.page.locator('#dock-input').fill('/help remote')
+        self.page.wait_for_function('nativeInput()?.pending === 0')
+        self.assertEqual(self.httpd.actions[-1][1]['machine'], 'worker-a')
+        self.assertEqual(self.page.evaluate('drafts.get("local/p2")?.text'), '/help local')
+        self.page.evaluate('switchMachine("local")')
+        self.page.wait_for_function('S.machine === "local" && S.pane === "p2"')
+        self.assertEqual(self.page.locator('#dock-input').input_value(), '/help local')
+        self.assertEqual(self.page.evaluate('nativeInput().sent'), '/help local')
+
+    def check_removed_pane_during_native_read(self, origin, destination, key="Enter"):
+        self.open("#pane=p2" if origin == "local" else f"#machine={origin}&pane=p2")
+        self.page.locator("#dock-input").fill("/help")
+        self.page.wait_for_function("nativeInput()?.pending === 0")
+        self.page.evaluate("window.pendingNativeTest = nativeInput()")
+        held_reads = []
+
+        def hold_visible_read(route):
+            query = parse_qs(urlparse(route.request.url).query)
+            if query.get("source") == ["visible"] and query.get("machine", ["local"]) == [origin] and not held_reads:
+                held_reads.append(route)
+            else:
+                route.continue_()
+
+        self.page.route(self.base + "/api/read*", hold_visible_read)
+        with self.page.expect_request(lambda r: parse_qs(urlparse(r.url).query).get("source") == ["visible"]):
+            self.page.locator("#dock-input").press(key)
+        self.page.wait_for_function("window.pendingNativeTest.pending > 0 && activeActions === 0")
+        self.assertEqual(len(held_reads), 1)
+
+        # Only the originating host loses p2; the other host retains the same ID.
+        pruned_tree = copy.deepcopy(TREE)
+        pruned_tree["panes"] = [p for p in pruned_tree["panes"] if p["pane_id"] != "p2"]
+        self.page.route(self.base + "/api/tree" + ("" if origin == "local" else f"?machine={origin}"),
+                        lambda route: route.fulfill(json=pruned_tree))
+        self.page.wait_for_function("!S.busy")
+        self.page.evaluate("refreshTree()")
+        self.assertTrue(self.page.evaluate("!nativeInputs.has('p2')"))
+        self.assertGreater(self.page.evaluate("window.pendingNativeTest.pending"), 0)
+        self.assertTrue(self.page.locator(f'[data-machine="{destination}"]').is_disabled())
+        switched_while_pending = self.page.evaluate("host => { switchMachine(host); return S.machine; }", destination)
+
+        held_reads[0].fulfill(json={"text": "/help\n→ help    Show help\n  model   Select model"})
+        self.page.evaluate("window.pendingNativeTest.queue")
+        self.assertEqual(self.page.evaluate("window.pendingNativeTest.pending"), 0)
+        self.assertFalse(self.page.evaluate("pendingNativeInputs.has(window.pendingNativeTest)"))
+        self.assertFalse(self.page.locator(f'[data-machine="{destination}"]').is_disabled())
+        self.page.evaluate("switchMachine", destination)
+        self.page.wait_for_function("host => S.machine === host && S.pane === 'p2'", arg=destination)
+
+        self.assertFalse(any(a[1].get("machine", "local") == destination for a in self.httpd.actions),
+                         "A native operation from a removed pane must never mutate the other host")
+        self.assertEqual(switched_while_pending, origin, "Pruning a pane must not drop its in-flight switch guard")
+        self.assertEqual(len(self.httpd.actions), 1, "A removed native input must not send its pending key")
+
+    def test_removed_local_pane_cannot_redirect_pending_native_enter(self):
+        self.check_removed_pane_during_native_read("local", "worker-a")
+
+    def test_removed_remote_pane_cannot_redirect_pending_native_enter(self):
+        self.check_removed_pane_during_native_read("worker-a", "local")
+
+    def test_removed_pane_cannot_send_pending_native_completion(self):
+        self.check_removed_pane_during_native_read("local", "worker-a", key="Tab")
+
     def test_native_keypad_edits_stay_in_owned_browser_draft(self):
         self.open()
         self.page.locator('#dock-input').fill('/')
@@ -637,6 +720,155 @@ class PhoneUITest(unittest.TestCase):
         self.assertFalse(self.page.locator(".canvas-wrap").is_visible())
         self.assertFalse(self.page.locator("#dock-input").evaluate("el => el === document.activeElement"))
         self.assertEqual(set(self.httpd.reads), {"p2"})
+        self.assertEqual(self.httpd.actions, [])
+
+    def test_machine_switch_isolates_colliding_pane_drafts_and_routes_actions(self):
+        def select_host(host):
+            node = self.page.locator(f'[data-machine="{host}"]')
+            if not node.is_visible():
+                self.page.get_by_role("button", name="Open spaces, tabs and panes").click()
+            node.click()
+            self.page.wait_for_function("host => S.machine === host && S.tree !== null", arg=host)
+            if node.is_visible():
+                self.page.get_by_role("button", name="Open spaces, tabs and panes").click()
+        self.open()
+        self.page.locator("#dock-input").fill("local draft")
+        select_host("worker-a")
+        self.assertEqual(self.page.locator("#dock-input").input_value(), "")
+        self.page.locator("#dock-term").get_by_text("Remote Terminal output for p2", exact=False).wait_for()
+        self.page.locator("#dock-input").fill("remote draft")
+        select_host("local")
+        self.assertEqual(self.page.evaluate("drafts.get('worker-a/p2')?.text"), "remote draft")
+        self.assertEqual(self.page.locator("#dock-input").input_value(), "local draft")
+        select_host("worker-a")
+        self.assertEqual(self.page.locator("#dock-input").input_value(), "remote draft",
+                         self.page.evaluate("({pane:S.pane, drafts:Array.from(drafts.entries())})"))
+        self.page.locator("#dock-form").evaluate("el => el.requestSubmit()")
+        self.page.wait_for_function("!submitBusy")
+        self.assertEqual(self.httpd.actions[-1][1]["machine"], "worker-a")
+        self.assertIn("machine=worker-a", self.page.url)
+
+    def test_remote_deep_link_selects_the_host_before_reading(self):
+        self.open("#machine=worker-a&pane=p4")
+        self.page.locator("#dock-term").get_by_text("Remote Terminal output for p4", exact=False).wait_for()
+        self.assertEqual(self.page.locator('[data-machine="worker-a"]').get_attribute("aria-expanded"), "true")
+        self.assertEqual(self.httpd.actions, [])
+
+    def test_delayed_local_snapshot_cannot_replace_remote_host(self):
+        self.httpd.delay_tree = True
+        self.page.goto(self.base + "/")
+        self.assertTrue(self.httpd.tree_started.wait(2))
+        self.httpd.delay_tree = False
+        self.page.get_by_role("button", name="Open spaces, tabs and panes").click()
+        self.page.locator('[data-machine="worker-a"]').click()
+        self.page.wait_for_function("S.tree?.host === 'Worker A'")
+        with self.page.expect_response(lambda r: r.url.endswith("/api/tree")):
+            self.httpd.tree_release.set()
+        self.page.evaluate("() => new Promise(requestAnimationFrame)")
+        self.assertEqual(self.page.evaluate("S.tree.host"), "Worker A")
+        self.assertEqual(self.page.evaluate("S.machine"), "worker-a")
+
+    def test_delayed_local_output_cannot_overwrite_same_remote_pane_id(self):
+        self.httpd.delay_pane = "p2"
+        self.open()
+        self.assertTrue(self.httpd.read_started.wait(2))
+        self.page.get_by_role("button", name="Open spaces, tabs and panes").click()
+        self.page.locator('[data-machine="worker-a"]').click()
+        self.page.locator("#dock-term").get_by_text("Remote Terminal output for p2", exact=False).wait_for()
+        with self.page.expect_response(lambda r: "/api/read?" in r.url and "machine=" not in r.url):
+            self.httpd.read_release.set()
+        self.page.evaluate("() => new Promise(requestAnimationFrame)")
+        self.assertTrue(self.page.locator("#dock-term").inner_text().startswith("Remote Terminal"))
+
+    def test_host_switch_is_disabled_during_terminal_delivery(self):
+        self.open()
+        self.httpd.delay_action = True
+        self.page.locator("#dock-input").fill("fictional command")
+        self.page.locator("#dock-form").evaluate("el => el.requestSubmit()")
+        self.assertTrue(self.httpd.action_started.wait(2))
+        self.page.get_by_role("button", name="Open spaces, tabs and panes").click()
+        self.assertTrue(self.page.locator('[data-machine="worker-a"]').is_disabled())
+        self.httpd.action_release.set()
+        self.page.wait_for_function("activeActions === 0")
+        self.assertFalse(self.page.locator('[data-machine="worker-a"]').is_disabled())
+        self.assertEqual(self.page.evaluate("S.machine"), "local")
+
+    def test_desktop_hosts_are_tree_nodes_with_only_selected_host_expanded(self):
+        self.page.set_viewport_size({"width": 1440, "height": 1000})
+        self.open()
+        local = self.page.locator('#tree > [data-machine="local"]')
+        remote = self.page.locator('#tree > [data-machine="worker-a"]')
+        remote.wait_for()
+        self.assertEqual(self.page.locator("#machine-select").count(), 0)
+        self.assertTrue(local.is_visible())
+        self.assertTrue(remote.is_visible())
+        self.assertEqual(local.get_attribute("aria-expanded"), "true")
+        self.assertEqual(remote.get_attribute("aria-expanded"), "false")
+        self.assertEqual(self.page.locator("#tree > [data-machine-children]").count(), 1)
+        self.assertGreater(self.page.locator('[data-machine-children="local"] [data-ws]').count(), 0)
+        remote.click()
+        self.page.wait_for_function("S.machine === 'worker-a' && S.tree !== null")
+        self.assertEqual(local.get_attribute("aria-expanded"), "false")
+        self.assertEqual(remote.get_attribute("aria-expanded"), "true")
+        self.assertEqual(self.page.locator('[data-machine-children="local"]').count(), 0)
+        self.assertEqual(self.page.locator("#tree > [data-machine-children]").count(), 1)
+        self.assertGreater(self.page.locator('[data-machine-children="worker-a"] [data-ws]').count(), 0)
+        self.assertEqual(self.httpd.actions, [])
+
+    def test_host_nodes_support_keyboard_and_preserve_focus_on_catalog_refresh(self):
+        self.page.set_viewport_size({"width": 1440, "height": 1000})
+        self.open()
+        remote = self.page.locator('[data-machine="worker-a"]')
+        remote.focus()
+        self.page.evaluate("refreshMachines()")
+        self.assertTrue(remote.evaluate("el => el === document.activeElement"))
+        remote.press("Enter")
+        self.page.wait_for_function("S.machine === 'worker-a' && S.tree !== null")
+        self.assertTrue(remote.evaluate("el => el === document.activeElement"))
+        self.assertEqual(self.httpd.actions, [])
+
+    def test_phone_host_nodes_are_visible_touch_targets_and_support_keyboard(self):
+        self.open()
+        self.page.get_by_role("button", name="Open spaces, tabs and panes").click()
+        remote = self.page.locator('[data-machine="worker-a"]')
+        remote.wait_for(state="visible")
+        self.assertGreaterEqual(remote.bounding_box()["height"], 44)
+        self.assertTrue(self.page.locator('[data-machine="local"]').is_visible())
+        remote.focus()
+        remote.press("Enter")
+        self.page.wait_for_function("S.machine === 'worker-a' && S.tree !== null")
+        self.assertTrue(remote.evaluate("el => el === document.activeElement"))
+        self.assertEqual(self.httpd.actions, [])
+
+    def test_hosts_remain_available_during_loading_and_offline_recovery(self):
+        self.httpd.delay_tree = True
+        self.page.goto(self.base + "/")
+        self.assertTrue(self.httpd.tree_started.wait(2))
+        self.page.get_by_role("button", name="Open spaces, tabs and panes").click()
+        remote = self.page.locator('[data-machine="worker-a"]')
+        remote.wait_for(state="visible")
+        self.assertTrue(self.page.locator('[data-machine="local"]').is_visible())
+        self.httpd.delay_tree = False
+        self.httpd.fail_tree = True
+        self.httpd.tree_release.set()
+        self.page.wait_for_function("S.err === 'Fixture offline'")
+        self.assertTrue(self.page.locator('[data-machine-children="local"]').get_by_text(
+            "Waiting for Herdr. Select another host or retry the connection.", exact=True).is_visible())
+        self.assertTrue(remote.is_visible())
+        self.assertFalse(remote.is_disabled())
+        self.httpd.fail_tree = False
+        remote.click()
+        self.page.wait_for_function("S.machine === 'worker-a' && S.tree !== null")
+        self.assertEqual(self.httpd.actions, [])
+
+    def test_disabled_host_node_cannot_switch_or_deliver_commands(self):
+        self.open()
+        self.page.get_by_role("button", name="Open spaces, tabs and panes").click()
+        disabled = self.page.locator('[data-machine="disabled-worker"]')
+        disabled.wait_for(state="visible")
+        self.assertTrue(disabled.is_disabled())
+        disabled.evaluate("el => el.click()")
+        self.assertEqual(self.page.evaluate("S.machine"), "local")
         self.assertEqual(self.httpd.actions, [])
 
     def test_deep_link_takes_priority(self):
@@ -1253,16 +1485,50 @@ class PhoneUITest(unittest.TestCase):
             self.page.locator('#dock-form button[type="submit"]').click()
         self.assertEqual(self.httpd.actions[-1][0], "/api/action/prompt")
 
-    def test_existing_desktop_inspector_normalizes_mobile_location(self):
+    def test_desktop_interaction_follows_workspace_selection_without_tui_focus(self):
         self.page.set_viewport_size({"width": 1440, "height": 1000})
         self.open()
         self.page.locator('[data-pane="p1"]').click()
         self.page.locator('[data-ws="w2"]').click()
-        self.assertEqual(self.page.locator("#dock-title").inner_text(), "ui-agent")
+        self.assertEqual(self.page.locator("#dock-title").inner_text(), "review-agent")
+        self.assertFalse(self.page.locator("#canvas-wrap").is_visible())
+        self.assertEqual(self.httpd.actions, [])
         self.page.set_viewport_size({"width": 390, "height": 844})
-        self.page.wait_for_function("document.querySelector('#mobile-path').textContent === 'Website / Build'")
-        self.assertEqual(self.page.locator("#mobile-title").inner_text(), "ui-agent")
-        self.assertEqual(self.page.locator("#mobile-path").inner_text(), "Website / Build")
+        self.page.wait_for_function("document.querySelector('#mobile-path').textContent === 'Docs / Writing'")
+        self.assertEqual(self.page.locator("#mobile-title").inner_text(), "review-agent")
+        self.assertEqual(self.page.locator("#mobile-path").inner_text(), "Docs / Writing")
+
+    def test_desktop_interaction_has_one_output_and_overview_keeps_draft(self):
+        self.page.set_viewport_size({"width": 1440, "height": 1000})
+        self.open()
+        self.page.locator('[data-pane="p1"]').click()
+        self.assertFalse(self.page.locator("#canvas-wrap").is_visible())
+        self.assertTrue(self.page.locator("#dock-term").is_visible())
+        self.page.locator("#dock-input").fill("saved draft")
+        dock = self.page.locator("#dock").bounding_box()
+        main = self.page.locator("#main-content").bounding_box()
+        tabs = self.page.locator("#tabbar").bounding_box()
+        self.assertAlmostEqual(dock["height"], main["height"] - tabs["height"], delta=2)
+        self.page.get_by_role("button", name="Return to pane overview").click()
+        self.assertTrue(self.page.locator("#canvas-wrap").is_visible())
+        self.assertFalse(self.page.locator("#dock").is_visible())
+        self.page.locator('[data-pane="p1"]').click()
+        self.assertEqual(self.page.locator("#dock-input").input_value(), "saved draft")
+        self.assertEqual(self.httpd.actions, [])
+
+    def test_desktop_tab_selection_changes_interactive_pane_and_handles_empty_tab(self):
+        self.page.set_viewport_size({"width": 1440, "height": 1000})
+        self.open()
+        self.page.locator('[data-pane="p1"]').click()
+        self.page.locator('[data-toggle="w2"]').click()
+        self.page.locator('[data-tab="t2"]').first.click()
+        self.assertEqual(self.page.locator("#dock-title").inner_text(), "review-agent")
+        self.assertFalse(self.page.locator("#canvas-wrap").is_visible())
+        self.page.locator('#tabbar [data-tab="t3"]').click()
+        self.assertFalse(self.page.locator("#dock").is_visible())
+        self.assertTrue(self.page.locator("#canvas-wrap").is_visible())
+        self.assertIn("no panes", self.page.locator("#canvas").inner_text().lower())
+        self.assertEqual(self.httpd.actions, [])
 
     def test_initial_loading_state_is_distinct_from_offline(self):
         self.httpd.delay_tree = True
@@ -1536,6 +1802,54 @@ class PhoneUITest(unittest.TestCase):
         self.page.evaluate("refreshTree()")
         self.assertTrue(self.page.locator('[data-pane="p1"]').evaluate("el => el === document.activeElement"))
 
+    def test_phone_wraps_long_terminal_lines_without_changing_desktop_layout(self):
+        token = "unbroken_" * 60
+        text = "wrap-fixture\n  " + "Long output with spaces. " * 60 + "\n  " + token + "\n" + "─" * 300 + "\n  indented code\n"
+        self.page.route(self.base + "/api/read*", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps({
+                "text": "\x1b[32m" + text + "\x1b[0m"
+                if parse_qs(urlparse(route.request.url).query).get("ansi") == ["1"] else text})))
+        self.open()
+        term = self.page.locator("#dock-term")
+        term.get_by_text("wrap-fixture", exact=False).first.wait_for()
+        for color in (True, False):
+            self.page.get_by_role("button", name="Pane actions", exact=True).first.click()
+            self.page.locator("#mobile-color").set_checked(color)
+            self.page.get_by_role("button", name="Pane actions", exact=True).first.click()
+            self.page.wait_for_function(
+                "color => Boolean(document.querySelector('#dock-term span[style]')) === color", arg=color)
+            for width, height in ((320, 700), (375, 812), (430, 932), (844, 390), (390, 430),
+                                  (1440, 1000), (390, 844)):
+                with self.subTest(color=color, width=width, height=height):
+                    self.page.set_viewport_size({"width": width, "height": height})
+                    if width > 900:
+                        self.page.locator('#tree [data-pane="p2"]').click()
+                    term.get_by_text("wrap-fixture", exact=False).first.wait_for()
+                    self.assertEqual(term.inner_text(), text)
+                    geometry = term.evaluate("""(el, token) => {
+                        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+                        let node;
+                        while ((node = walker.nextNode())) {
+                            const start = node.textContent.indexOf(token);
+                            if (start < 0) continue;
+                            const range = document.createRange();
+                            range.setStart(node, start); range.setEnd(node, start + token.length);
+                            return {lines: range.getClientRects().length, width: el.clientWidth,
+                                    scrollWidth: el.scrollWidth, whiteSpace: getComputedStyle(el).whiteSpace};
+                        }
+                        throw new Error("Fixture token missing");
+                    }""", token)
+                    if width <= 900:
+                        self.assertEqual(geometry["whiteSpace"], "pre-wrap")
+                        self.assertLessEqual(geometry["scrollWidth"], geometry["width"])
+                        self.assertGreater(geometry["lines"], 1)
+                        self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
+                    else:
+                        self.assertEqual(geometry["whiteSpace"], "pre")
+                        self.assertGreater(geometry["scrollWidth"], geometry["width"])
+                        self.assertEqual(geometry["lines"], 1)
+        self.assertEqual(self.httpd.actions, [])
+
     def test_narrow_and_landscape_views_keep_composer_inside_viewport(self):
         self.open()
         for width, height in ((320, 700), (375, 812), (430, 932), (844, 390), (390, 430)):
@@ -1611,7 +1925,7 @@ class RealBridgeUITest(unittest.TestCase):
             threading.Thread(target=httpd.serve_forever, daemon=True).start()
             try:
                 with sync_playwright() as playwright:
-                    browser = playwright.chromium.launch(channel="chrome", headless=True)
+                    browser = playwright.chromium.launch(channel=os.environ.get("HERDR_WEBUI_BROWSER", "chrome"), headless=True)
                     try:
                         page = browser.new_page(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True)
                         page.goto(f"http://127.0.0.1:{httpd.server_port}/")
@@ -1642,7 +1956,7 @@ class RealBridgeUITest(unittest.TestCase):
             threading.Thread(target=httpd.serve_forever, daemon=True).start()
             try:
                 with sync_playwright() as playwright:
-                    browser = playwright.chromium.launch(channel="chrome", headless=True)
+                    browser = playwright.chromium.launch(channel=os.environ.get("HERDR_WEBUI_BROWSER", "chrome"), headless=True)
                     try:
                         page = browser.new_page(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True)
                         page.goto(f"http://127.0.0.1:{httpd.server_port}/")
