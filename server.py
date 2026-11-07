@@ -33,8 +33,8 @@ ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_.\-]{0,127}$")
 KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9+_\-]{0,31}$")
 KINDS = {"pi", "claude", "codex", "gemini", "cursor", "opencode", "copilot", "amp", "hermes", "qwen", "kimi", "droid"}
 MAX_TEXT = 16_000
-MAX_READ = 250_000
-MAX_READ_LINES = 2000
+MAX_READ = 2_000_000
+MAX_READ_LINES = 50000
 
 
 class BridgeError(Exception):

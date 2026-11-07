@@ -64,9 +64,15 @@ prefix. Type `/model` and Enter: expect selectable native model rows; tap/click
 one to select it, or use ↑/↓ and Enter with the composer unfocused. Escape cancels native interaction. On uncertain delivery, inspect
 and repair the pane before resetting browser mirroring.
 Check that tapping the composer opens the keyboard while keeping input visible.
-In a pane with more than 400 lines of output, scroll to the top and tap **Load
-older output**: expect earlier lines above the same reading position, then
-**Jump to latest** to return to live output. No input is sent.
+In a pane with more than 400 lines of output, scroll to the top and keep pulling
+**down** (desktop: scroll upward): expect earlier lines above the same reading
+position. Repeat at each new top to go further back while Herdr returns more.
+Herdr 0.9.5 limits native reads to 1,000 rendered rows even if its terminal retains
+more; expect an explicit boundary message, not a claim that history is exhausted.
+Use **Jump to latest** to return to live output. No input is sent.
+Drag-select terminal text on desktop, or touch and hold text on a phone, then use
+native **Copy**. Expect plain text with no ANSI escape codes; selection stays
+stable during polling. Clear the selection to resume live display updates.
 Safari's Share > Add to Home Screen makes a convenient shortcut.
 
 7. Run browser regressions, if Playwright Python and Google Chrome are already installed.

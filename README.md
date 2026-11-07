@@ -28,15 +28,23 @@ output and direct agent interaction from the browser.
   - **Type only**, and one-click keys (Enter, Alt-Enter, Esc, Ctrl-C, arrows, y/n, 1/2/3…).
 - Launch a new space or tab, optionally starting an agent (`pi`, `claude`, `codex`, …) — without stealing TUI focus.
 - Split / close panes, focus a pane in the Herdr TUI, filter (⌘K), `#pane=<id>` deep links.
-- **Load older output** above the terminal fetches a larger recent snapshot on
-  demand (400 → 800 → 1,600 → 2,000 lines) and keeps your reading position.
+- **Pull down at the top** of terminal output to load older history. Keep pulling
+  again at each new top to go further back; desktop users can scroll upward or
+  press Page Up with the output focused. Larger recent snapshots load only on
+  demand (400 → 800 → 1,600 → 3,200 → … lines), keeping your reading position.
   While you read history, live polling continues in the background without
   replacing it; **Jump to latest** returns to live output. Herdr offers only
   "last N lines" snapshots (no history cursor), so snapshots are never stitched
   together. If output changes so your position cannot be mapped exactly, the
   current view stays and **Show changed snapshot** is offered. Limits are
-  explicit: the 2,000-line and 250,000-character response caps, or no older
-  output retained by Herdr (alternate-screen apps may retain none).
+  explicit: the 50,000-line and 2,000,000-character bridge response caps, or no
+  additional output returned by Herdr. **Herdr 0.9.5 caps each native read at
+  1,000 rendered rows**, even if its terminal retains more. Repeated pulls cannot
+  bypass that upstream limit; deep history needs an upstream read API change.
+  Alternate-screen history availability also depends on Herdr and the agent.
+- Select and copy terminal text with the browser's usual drag or touch selection.
+  Selected live output stays stable while polling continues; clear the selection
+  to display the latest output again. Copying does not send keys to the pane.
 - Phone layout (900px wide and below): one focused terminal, hamburger navigation,
   a separate all-agents view, and touch-friendly input. Desktop offers the pane
   overview or one interactive terminal, not both at once.

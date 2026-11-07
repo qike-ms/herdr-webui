@@ -278,7 +278,7 @@ select{background:var(--bg0);border:1px solid var(--line2);border-radius:8px;pad
 #machine-error{padding:0 16px 8px;color:var(--red);font-size:12px}
 .history-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 12px;border-bottom:1px solid var(--line);font-size:11px;color:var(--fg3);flex:none}
 .history-bar .btn{min-height:28px}
-#dock-term{overflow-anchor:none}
+#dock-term{overflow-anchor:none;-webkit-user-select:text;user-select:text;cursor:text}
 .short-phone .side-h{justify-content:flex-end}
 .short-phone .side-h h3,.short-phone #active-pill{display:none}
 </style>
@@ -348,8 +348,8 @@ select{background:var(--bg0);border:1px solid var(--line2);border-radius:8px;pad
           <button class="btn" id="dock-focus" title="Focus this pane in the Herdr TUI">Focus in Herdr</button>
           <button class="btn" id="dock-close" title="Return to pane overview without stopping the terminal (Esc)" aria-label="Return to pane overview">Overview</button>
         </div>
-        <div class="history-bar" id="dock-history"><button type="button" class="btn" id="dock-older" disabled>Load older output</button><span id="dock-history-status" role="status" aria-live="polite"></span><button type="button" class="btn" id="dock-history-apply" hidden>Show changed snapshot</button><button type="button" class="btn cy" id="dock-latest" hidden>Jump to latest</button></div>
-        <div class="term" id="dock-term"></div>
+        <div class="history-bar" id="dock-history"><span id="dock-history-status" role="status" aria-live="polite">Pull down or scroll up at the top to load older output.</span><button type="button" class="btn" id="dock-history-apply" hidden>Show changed snapshot</button><button type="button" class="btn cy" id="dock-latest" hidden>Jump to latest</button></div>
+        <div class="term" id="dock-term" tabindex="0" aria-label="Terminal output and history"></div>
         <div class="keys" id="dock-keys"></div>
         <section id="native-menu" class="native-menu" hidden aria-label="Live agent menu">
           <header id="native-menu-title">Agent commands · ↑ ↓ navigate · Enter select · Tab parameters</header>
@@ -792,9 +792,12 @@ async function pollDock(){
   H.latest=txt;
   if(H.mode==="history"){if(txt!==H.tail)$("dock-latest").textContent="New output · Jump to latest";}
   else{
-  H.live=txt;$("dock-older").disabled=H.loading;
-  const el=$("dock-term");const atBottom=el.scrollHeight-el.scrollTop-el.clientHeight<30;
-  el.innerHTML=ansi?ansiToHtml(txt):esc(txt);if(atBottom||S.dockStick){el.scrollTop=el.scrollHeight;S.dockStick=false;}
+  const el=$("dock-term"),selection=getSelection();
+  // Replacing the DOM clears native selection, including Safari's copy handles.
+  if(!selection?.rangeCount||selection.isCollapsed||!selection.getRangeAt(0).intersectsNode(el)){
+    H.live=txt;const atBottom=el.scrollHeight-el.scrollTop-el.clientHeight<30;
+    el.innerHTML=ansi?ansiToHtml(txt):esc(txt);if(atBottom||S.dockStick){el.scrollTop=el.scrollHeight;S.dockStick=false;}
+  }
   }
   if(!nativeInput()&&getPane(id)?.agent&&nativeModelRows(txt)){
     try{
@@ -812,12 +815,13 @@ function layoutOf(tab){return S.tree?.layouts.find(l=>l.tab_id===tab);}
    load replaces the view with one complete, larger snapshot; snapshots are never
    stitched or deduplicated. The reader's position is kept only when the previous
    view occurs exactly once in the new snapshot; otherwise the old view stays. */
-const LIVE_LINES=400;
+const LIVE_LINES=400,MAX_HISTORY_LINES=50000;
+const HISTORY_HINT="Pull down or scroll up at the top to load older output.";
 const H={gen:0,mode:"live",lines:LIVE_LINES,raw:"",tail:null,latest:null,live:null,loading:false,candidate:null,done:false};
 function resetHistory(){
   Object.assign(H,{gen:H.gen+1,mode:"live",lines:LIVE_LINES,raw:"",tail:null,latest:null,live:null,loading:false,candidate:null,done:false});
-  $("dock-older").disabled=true;$("dock-older").textContent="Load older output";$("dock-older").removeAttribute("aria-busy");
-  $("dock-history-status").textContent="";$("dock-latest").hidden=$("dock-history-apply").hidden=true;
+  $("dock-history").removeAttribute("aria-busy");
+  $("dock-history-status").textContent=HISTORY_HINT;$("dock-latest").hidden=$("dock-history-apply").hidden=true;
 }
 const plainLines=raw=>stripAnsi(raw).split("\n");
 // Line index where `prev` appears exactly once in `next`, trying a few trailing lines
@@ -848,38 +852,56 @@ function showHistory(raw,{anchorLine=null,prevTop=0}={}){
   $("dock-latest").hidden=false;$("dock-latest").textContent="Jump to latest";
 }
 async function loadOlder(){
-  if(H.loading||H.done||!S.pane||(H.mode==="history"?H.raw:H.live)===null)return;
-  const next=Math.min(H.lines*2,2000),gen=H.gen,machine=S.machine,id=S.pane,el=$("dock-term"),btn=$("dock-older");
-  H.loading=true;btn.disabled=true;btn.setAttribute("aria-busy","true");btn.textContent="Loading older output…";
-  $("dock-history-status").textContent="";
+  if(H.loading||H.done||H.candidate!==null||!S.pane||(H.mode==="history"?H.raw:H.live)===null)return;
+  const next=Math.min(H.lines*2,MAX_HISTORY_LINES),gen=H.gen,machine=S.machine,id=S.pane,el=$("dock-term");
+  H.loading=true;$("dock-history").setAttribute("aria-busy","true");
+  $("dock-history-status").textContent="Loading older output…";
   let d=null,error=null;
   try{d=await getJSON(machineURL(`/api/read?pane=${encodeURIComponent(id)}&lines=${next}&ansi=1`,machine));if(typeof d.text!=="string")throw new Error("The server response was invalid.");}
   catch(e){error=e;}
   if(gen!==H.gen||machine!==S.machine||id!==S.pane)return; // Selection changed; discard.
-  H.loading=false;btn.removeAttribute("aria-busy");btn.textContent="Load older output";
-  if(error){reportWebUIError("ui_error","/api/read");$("dock-history-status").textContent=`Could not load older output: ${error.message}`;btn.textContent="Retry loading older output";btn.disabled=false;return;}
+  H.loading=false;$("dock-history").removeAttribute("aria-busy");
+  if(error){reportWebUIError("ui_error","/api/read");$("dock-history-status").textContent=`Could not load older output: ${error.message} Pull again to retry.`;return;}
   const base=H.mode==="history"?H.raw:H.live,prevTop=el.scrollTop,anchor=historyAnchor(base,d.text);
   H.lines=d.lines||next;
   let status;
   if(d.char_limited){H.done=true;status="Response size limit reached; older output may exist but cannot be loaded here.";}
-  else if(anchor===0){H.done=true;status="No older output is retained by Herdr for this pane.";}
-  else if(H.lines>=(d.max_lines||2000)){H.done=true;status=`Showing the ${H.lines.toLocaleString()}-line limit; older output may exist.`;}
-  else status=`Showing up to ${H.lines.toLocaleString()} recent lines.`;
-  btn.disabled=H.done;
+  else if(anchor===0){H.done=true;status="Herdr returned no additional older output. Its read API may limit history even when the terminal retains more.";}
+  else if(H.lines>=(d.max_lines||MAX_HISTORY_LINES)){H.done=true;status=`Showing the ${H.lines.toLocaleString()}-line limit; older output may exist.`;}
+  else status=`Showing up to ${H.lines.toLocaleString()} recent lines. ${HISTORY_HINT}`;
   if(anchor===null){
-    H.candidate=d.text;H.done=false;btn.disabled=true;$("dock-history-apply").hidden=false;
+    H.candidate=d.text;H.done=false;$("dock-history-apply").hidden=false;
     status="The output changed while loading, so your place cannot be kept. Current view kept.";
   }else showHistory(d.text,{anchorLine:anchor,prevTop});
   $("dock-history-status").textContent=status;
 }
-$("dock-older").onclick=loadOlder;
+// Load once per touch pull; wheel/keyboard users can keep scrolling at the top.
+let historyTouch=null,historyWheel=0,historyWheelTimer;
+$("dock-term").addEventListener("touchstart",e=>{historyTouch=e.touches.length===1?{y:e.touches[0].clientY,pull:0,loaded:false,gen:H.gen}:null;},{passive:true});
+$("dock-term").addEventListener("touchmove",e=>{
+  if(!historyTouch||e.touches.length!==1||historyTouch.gen!==H.gen)return;
+  const y=e.touches[0].clientY,delta=y-historyTouch.y;historyTouch.y=y;
+  if($("dock-term").scrollTop>1||delta<0){historyTouch.pull=0;return;}
+  historyTouch.pull+=delta;
+  if(historyTouch.pull>=48&&!historyTouch.loaded){historyTouch.loaded=true;loadOlder();}
+},{passive:true});
+for(const event of ["touchend","touchcancel"])$("dock-term").addEventListener(event,()=>{historyTouch=null;},{passive:true});
+$("dock-term").addEventListener("wheel",e=>{
+  clearTimeout(historyWheelTimer);historyWheelTimer=setTimeout(()=>{historyWheel=0;},180);
+  if(e.ctrlKey||e.deltaY>=0||$("dock-term").scrollTop>1){historyWheel=0;return;}
+  historyWheel+=Math.abs(e.deltaY)*(e.deltaMode===1?16:e.deltaMode===2?$("dock-term").clientHeight:1);
+  if(historyWheel>=48){historyWheel=0;loadOlder();}
+},{passive:true});
+$("dock-term").addEventListener("keydown",e=>{
+  if(!e.ctrlKey&&!e.metaKey&&!e.altKey&&!e.shiftKey&&["ArrowUp","PageUp","Home"].includes(e.key)&&$("dock-term").scrollTop<=1&&nativeInput()?.phase!=="model")loadOlder();
+});
 $("dock-history-apply").onclick=()=>{
   if(H.candidate===null)return;const raw=H.candidate;H.candidate=null;$("dock-history-apply").hidden=true;
-  showHistory(raw);$("dock-older").disabled=H.done;$("dock-history-status").textContent="Showing the changed snapshot from its oldest line.";
+  showHistory(raw);$("dock-history-status").textContent=`Showing the changed snapshot from its oldest line. ${HISTORY_HINT}`;
 };
 $("dock-latest").onclick=()=>{
   const latest=H.latest;resetHistory();H.live=latest;S.dockStick=true;
-  if(latest!==null){const el=$("dock-term");el.innerHTML=$("dock-ansi").checked?ansiToHtml(latest):esc(stripAnsi(latest));el.scrollTop=el.scrollHeight;$("dock-older").disabled=false;}
+  if(latest!==null){const el=$("dock-term");el.innerHTML=$("dock-ansi").checked?ansiToHtml(latest):esc(stripAnsi(latest));el.scrollTop=el.scrollHeight;}
   pollDock();
 };
 
