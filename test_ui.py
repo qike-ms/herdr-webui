@@ -2159,6 +2159,57 @@ class PhoneUITest(unittest.TestCase):
         self.assertEqual(self.page.locator("#dock-term").text_content(), "cleared\nscreen")
         self.assertEqual(self.httpd.actions, [])
 
+    def test_first_pull_changed_snapshot_freezes_selection_and_latest_cancels(self):
+        self.httpd.history["p2"] = [f"line {i}" for i in range(1000)]
+        self.open()
+        self.wait_live("line 999")
+        previous = self.page.locator("#dock-term").text_content()
+        self.page.locator("#dock-term").evaluate("""el => {
+            const r=document.createRange();r.selectNodeContents(el);
+            getSelection().removeAllRanges();getSelection().addRange(r);
+        }""")
+        self.httpd.history["p2"] = ["changed snapshot", "new screen"]
+        self.pull_older()
+        self.page.locator("#dock-history-apply").wait_for()
+        self.httpd.history["p2"] = ["latest output"]
+        self.page.evaluate("pollDock()")
+        self.assertEqual(self.page.locator("#dock-term").text_content(), previous)
+        self.assertEqual(self.page.evaluate("getSelection().toString()"), previous)
+        self.assertTrue(self.page.locator("#dock-latest").is_visible())
+        self.page.locator("#dock-latest").click()
+        self.wait_live("latest output")
+        self.assertTrue(self.page.locator("#dock-history-apply").is_hidden())
+        self.assertEqual(self.page.evaluate("H.mode"), "live")
+        self.assertEqual(self.httpd.actions, [])
+
+    def test_unanchored_snapshot_keeps_character_and_line_boundary_after_apply(self):
+        self.httpd.history["p2"] = [f"line {i}" for i in range(1000)]
+        self.open()
+        for capped, message in (("character", "Response size limit reached"),
+                                ("line", "Showing the 800-line limit")):
+            with self.subTest(capped=capped):
+                self.httpd.history["p2"] = [f"line {i}" for i in range(1000)]
+                self.page.evaluate("pollDock()")
+                self.wait_live("line 999")
+                self.httpd.history["p2"] = ["changed snapshot", "new screen"]
+                self.httpd.char_limited = capped == "character"
+                self.httpd.max_history_lines = 800 if capped == "line" else 50000
+                self.pull_older()
+                self.page.locator("#dock-history-apply").wait_for()
+                self.assertIn(message, self.page.locator("#dock-history-status").text_content())
+                self.assertTrue(self.page.evaluate("H.done"))
+                self.page.locator("#dock-history-apply").click()
+                self.assertEqual(self.page.locator("#dock-term").text_content(), "changed snapshot\nnew screen")
+                self.assertIn(message, self.page.locator("#dock-history-status").text_content())
+                self.assertNotIn("Pull down", self.page.locator("#dock-history-status").text_content())
+                self.pull_older()
+                self.assertTrue(self.page.evaluate("H.done && !H.loading"))
+                self.page.locator("#dock-latest").click()
+                self.page.wait_for_function("reading.size === 0")
+                self.httpd.char_limited = False
+                self.httpd.max_history_lines = 50000
+        self.assertEqual(self.httpd.actions, [])
+
     def test_history_response_after_pane_switch_is_discarded(self):
         self.httpd.history["p2"] = [f"line {i}" for i in range(1000)]
         self.httpd.delay_lines = 800

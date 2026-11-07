@@ -870,8 +870,10 @@ async function loadOlder(){
   else if(H.lines>=(d.max_lines||MAX_HISTORY_LINES)){H.done=true;status=`Showing the ${H.lines.toLocaleString()}-line limit; older output may exist.`;}
   else status=`Showing up to ${H.lines.toLocaleString()} recent lines. ${HISTORY_HINT}`;
   if(anchor===null){
-    H.candidate=d.text;H.done=false;$("dock-history-apply").hidden=false;
-    status="The output changed while loading, so your place cannot be kept. Current view kept.";
+    H.candidate={raw:d.text,status};$("dock-history-apply").hidden=false;
+    if(H.mode==="live"){H.mode="history";H.raw=base;H.tail=H.latest;}
+    $("dock-latest").hidden=false;$("dock-latest").textContent="Jump to latest";
+    status="The output changed while loading, so your place cannot be kept. Current view kept."+(H.done?` ${status}`:"");
   }else showHistory(d.text,{anchorLine:anchor,prevTop});
   $("dock-history-status").textContent=status;
 }
@@ -896,8 +898,8 @@ $("dock-term").addEventListener("keydown",e=>{
   if(!e.ctrlKey&&!e.metaKey&&!e.altKey&&!e.shiftKey&&["ArrowUp","PageUp","Home"].includes(e.key)&&$("dock-term").scrollTop<=1&&nativeInput()?.phase!=="model")loadOlder();
 });
 $("dock-history-apply").onclick=()=>{
-  if(H.candidate===null)return;const raw=H.candidate;H.candidate=null;$("dock-history-apply").hidden=true;
-  showHistory(raw);$("dock-history-status").textContent=`Showing the changed snapshot from its oldest line. ${HISTORY_HINT}`;
+  if(H.candidate===null)return;const candidate=H.candidate;H.candidate=null;$("dock-history-apply").hidden=true;
+  showHistory(candidate.raw);$("dock-history-status").textContent=`Showing the changed snapshot from its oldest line. ${candidate.status}`;
 };
 $("dock-latest").onclick=()=>{
   const latest=H.latest;resetHistory();H.live=latest;S.dockStick=true;
